@@ -1,0 +1,573 @@
+---
+title: 'RBC 16S analysis: abiotic variables'
+output: html_document
+---
+
+Written by Delaney Beals \| Date created: October 26, 2023 \| Date most recent edit: December 11, 2023
+
+Resource: <https://rstudio-pubs-static.s3.amazonaws.com/548738_f2de141dddb146879c535583eb8ba79c.html>
+
+Here we want to determine if there is a relationship between different environmental parameters that don't involve the microbial communities of the soil. We are mostly interested in the relationship between methane flux and other variables. Data was obtained from the Knowlton Fork (KF) 2021 datasheets available on HydroShare.
+
+```{r message=FALSE, warning=FALSE}
+library(vegan)
+library(tidyverse)
+library(ggplot2)
+library(viridis)
+library(cowplot)
+library(lubridate)
+library(ggpubr)
+library(corrplot)
+library(extrafont)
+```
+
+```{r}
+# Load in data
+abiotic_metadata <- read.csv("KF_metadata.csv", header = T, row.names = 1, sep = ",")
+abiotic <- as.data.frame(abiotic_metadata)
+
+head(abiotic)
+```
+
+Next we will run Pearson correlation tests between different variables.
+
+```{r}
+# flux vs. water dissolved oxygen
+cor.test(abiotic$flux.med, abiotic$dissolved.oxg.mgL, 
+                    method = "pearson") # R = 0.8871995; p-value = 0.0447
+cor.test(abiotic$flux.med.rip, abiotic$dissolved.oxg.mgL, 
+                    method = "pearson") # R = 0.9104768; p-value = 0.03172
+cor.test(abiotic$flux.med.up, abiotic$dissolved.oxg.mgL, 
+                    method = "pearson") # R = 0.8033748; p-value = 0.1015
+
+# flux vs. plant cover
+cor.test(abiotic$flux.med, abiotic$KF.plant.cover, 
+                    method = "pearson") # R = -0.4950569; p-value = 0.3965
+cor.test(abiotic$flux.med.rip, abiotic$KF.plant.cover, 
+                    method = "pearson") # -0.5904275 p-value = 0.2946
+cor.test(abiotic$flux.med.up, abiotic$KF.plant.cover, 
+                    method = "pearson") # -0.3597735  p-value = 0.552
+
+# flux vs. water temperature
+cor.test(abiotic$flux.med, abiotic$WaterTemp_EXO, 
+                    method = "pearson") # R = -0.9586511; p-value = 0.01003
+cor.test(abiotic$flux.med.rip, abiotic$WaterTemp_EXO, 
+                    method = "pearson") # R = -0.9304217; p-value = 0.0218
+cor.test(abiotic$flux.med.up, abiotic$WaterTemp_EXO, 
+                    method = "pearson") # R = -0.9119055; p-value = 0.03097
+
+# flux vs. volumetric water content at 5 cm
+cor.test(abiotic$flux.med, abiotic$KF.VWC, 
+                    method = "pearson") # R = 0.7352166; p-value = 0.1569
+cor.test(abiotic$flux.med.rip, abiotic$KF.VWC, 
+                    method = "pearson") # R = 0.6397685; p-value = 0.245
+cor.test(abiotic$flux.med.up, abiotic$KF.VWC, 
+                    method = "pearson") # R = 0.741945;  p-value = 0.1511
+
+# flux vs. air temperature
+cor.test(abiotic$flux.med, abiotic$KF.air.temp, 
+                    method = "pearson") # R = -0.5135805; p-value = 0.3761
+cor.test(abiotic$flux.med.rip, abiotic$KF.air.temp, 
+                    method = "pearson") # R = -0.616543;  p-value = 0.268
+cor.test(abiotic$flux.med.up, abiotic$KF.air.temp, 
+                    method = "pearson") # R = -0.3708015; p-value = 0.5389
+
+# flux vs. 5 cm soil temperature
+cor.test(abiotic$flux.med, abiotic$KF.soil.temp, 
+                    method = "pearson") # R = -0.959627; p-value = 0.009679
+cor.test(abiotic$flux.med.rip, abiotic$KF.soil.temp, 
+                    method = "pearson") # R = -0.9522546; p-value = 0.01243
+cor.test(abiotic$flux.med.up, abiotic$KF.soil.temp, 
+                    method = "pearson") # R = -0.9008488; p-value = 0.03692
+
+# flux vs. gravimetric water content
+cor.test(abiotic$flux.med.up, abiotic$GWC.up, 
+                    method = "pearson") # R = -0.3526934;  p-value = 0.5604
+cor.test(abiotic$flux.med.rip, abiotic$GWC.rip, 
+                    method = "pearson") # R = -0.6789623 ; p-value = 0.2075
+
+# flux vs. permittivity
+cor.test(abiotic$flux.med, abiotic$permit, 
+                    method = "pearson") # R = 0.7871688; p-value = 0.114
+cor.test(abiotic$flux.med.rip, abiotic$permit, 
+                    method = "pearson") # R = 0.8002092; p-value = 0.1039
+cor.test(abiotic$flux.med.up, abiotic$permit, 
+                    method = "pearson") # R = 0.694907; p-value = 0.1928
+
+# flux vs. wind speed
+cor.test(abiotic$flux.med, abiotic$wind, 
+                    method = "pearson") # R = -0.2688901; p-value = 0.6618
+cor.test(abiotic$flux.med.rip, abiotic$wind, 
+                    method = "pearson") # R = -0.1995695; p-value = 0.7476
+cor.test(abiotic$flux.med.up, abiotic$wind, 
+                    method = "pearson") # R = 0.167129; p-value = 0.7882
+
+# flux vs. water pH
+cor.test(abiotic$flux.med, abiotic$pH, 
+                    method = "pearson") # R = -0.2235258; p-value = 0.7178
+cor.test(abiotic$flux.med.rip, abiotic$pH, 
+                    method.up = "pearson") # R = -0.1370048; p-value = 0.8261
+cor.test(abiotic$flux.med.up, abiotic$pH, 
+                    method = "pearson") # R = -0.3815217 ; p-value = 0.5263
+
+# flux vs. dew point
+cor.test(abiotic$flux.med, abiotic$dew, 
+                    method = "pearson") # R = -0.5296249; p-value = 0.3587
+cor.test(abiotic$flux.med.rip, abiotic$dew, 
+                    method = "pearson") # R = -0.5904697; p-value = 0.2945
+cor.test(abiotic$flux.med.up, abiotic$dew, 
+                    method = "pearson") # R = -0.4023638; p-value = 0.5019
+
+# flux vs. relative humidity
+cor.test(abiotic$flux.med, abiotic$RH, 
+                    method = "pearson") # R = -0.5413367; p-value = 0.3461
+cor.test(abiotic$flux.med.rip, abiotic$RH, 
+                    method = "pearson") # R = -0.4708523; p-value = 0.4234
+cor.test(abiotic$flux.med.up, abiotic$RH, 
+                    method = "pearson") # R = -0.521966; p-value = 0.367
+
+# flux vs. VWC at 10 cm
+cor.test(abiotic$flux.med, abiotic$VWC.10, 
+                    method = "pearson") # R = 0.7422863 ; p-value = 0.1508
+cor.test(abiotic$flux.med.rip, abiotic$VWC.10, 
+                    method = "pearson") # R = 0.7489831 ; p-value = 0.1452
+cor.test(abiotic$flux.med.up, abiotic$VWC.10, 
+                    method = "pearson") # R = 0.6456267 ;  p-value = 0.2393
+
+# flux vs. VWC at 20 cm
+cor.test(abiotic$flux.med, abiotic$VWC.20, 
+                    method = "pearson") # R = 0.8656571  ; p-value = 0.0579
+cor.test(abiotic$flux.med.rip, abiotic$VWC.20, 
+                    method = "pearson") # R = 0.860721  ; p-value = 0.06108
+cor.test(abiotic$flux.med.up, abiotic$VWC.20, 
+                    method = "pearson") # R = 0.7809968  ;  p-value = 0.1189
+
+# flux vs. VWC at 50 cm
+cor.test(abiotic$flux.med, abiotic$VWC.50, 
+                    method = "pearson") # R = 0.6229855   ; p-value = 0.2616
+cor.test(abiotic$flux.med.rip, abiotic$VWC.50, 
+                    method = "pearson") # R = 0.6594483   ; p-value = 0.226
+cor.test(abiotic$flux.med.up, abiotic$VWC.50, 
+                    method = "pearson") # R = 0.4978925   ;  p-value = 0.3933
+
+# flux vs. VWC at 100 cm
+cor.test(abiotic$flux.med, abiotic$VWC.100, 
+                    method = "pearson") # R = -0.5978083    ; p-value = 0.287
+cor.test(abiotic$flux.med.rip, abiotic$VWC.100, 
+                    method = "pearson") # R = -0.4667811    ; p-value = 0.428
+cor.test(abiotic$flux.med.up, abiotic$VWC.100, 
+                    method = "pearson") # R = -0.7157318   ;  p-value = 0.174
+```
+
+```{r}
+abiotic1 <- abiotic[,-26]
+abiotic2 <- abiotic1[,-1]
+#calculate correlation
+corr.abio <- Hmisc::rcorr(as.matrix(abiotic2), type=c("pearson"))
+
+# plot correlation
+corrplot(corr=corr.abio$r[2:15, 16:28], 
+         p.mat=corr.abio$P[2:15, 16:28], 
+         tl.col = "black",
+         tl.srt = 45,
+         insig = "pch", 
+         sig.level = c(.05), 
+         pch.cex = 2, 
+         pch.col = "black", 
+         number.cex=0.7,
+         number.digits = 2,
+         cl.length = 5,
+         cl.align.text = "l")
+
+# to get P values
+res8 <- cor.mtest(abiotic2, conf.level = .95)
+
+# another way to generate plot
+corrplot(cor(abiotic2, method = "pearson"), tl.col = "black", tl.cex = 0.7, p.mat = res8$p, insig = "pch", sig.level = c(.05), pch.cex = 1, pch.col = "black",  order = "hclust", hclust.method = "average")
+```
+
+We can also plot these relationships. The geom_smooth function will add a linear regression trend line over our data
+
+```{r}
+# for editing theme
+my_theme <- theme_bw() +
+        theme(text=element_text(size = 12, family = "Calibri"),
+        axis.text.x=element_text(size=12, color = "black", family = "Calibri"), 
+        axis.text.y = element_text(size=12, color = "black",  family = "Calibri"),
+        title = element_text(size = 12, color = "black",  family = "Calibri"), 
+        legend.title=element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        element_line(linewidth = 1, colour = "black")
+                )
+```
+
+```{r message=FALSE, warning=FALSE}
+a <- ggplot(abiotic, aes(x = KF.soil.temp, y = flux.med, colour = month)) +
+  geom_smooth(method = "lm", colour = "black") +
+  geom_point( size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  scale_x_continuous(n.breaks = 10) +
+  my_theme +
+  theme(axis.text.x = element_text(hjust = 1, vjust = 0.4)) +
+  labs(x="Soil temperature", y="Median methane flux")
+
+b <- ggplot(abiotic, aes(x = KF.plant.cover, y = flux.med, colour = month)) +
+  geom_smooth(method = "lm", colour = "black") +
+  geom_point( size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  scale_x_continuous(n.breaks = 6) +
+  my_theme +
+  theme(axis.text.x = element_text(hjust = 1, vjust = 0.4)) +
+  labs(x="Relative plant height", y="")
+
+c <- ggplot(abiotic, aes(x = KF.air.temp, y = flux.med, colour = month)) +
+  geom_smooth(method = "lm", colour = "black") +
+  geom_point( size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  scale_x_continuous(n.breaks = 6) +
+  my_theme +
+  theme(axis.text.x = element_text(hjust = 1, vjust = 0.4)) +
+  labs(x="Air temperature", y="")
+
+d <- ggplot(abiotic, aes(x = KF.VWC, y = flux.med, colour = month)) +
+  geom_smooth(method = "lm", colour = "black") +
+  geom_point( size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  scale_x_continuous(n.breaks = 6) +
+  my_theme +
+  theme(axis.text.x = element_text(hjust = 1, vjust = 0.4)) +
+  labs(x="Volumetric water content", y="")
+
+legend <- get_legend(a)
+
+grid <- plot_grid(a + theme(legend.position = 'none'),
+          b + theme(legend.position = 'none'),
+          c + theme(legend.position = 'none'),
+          d + theme(legend.position = 'none'),
+        legend, rel_heights = c(1,1,1,1,0.5), nrow = 2, ncol = 3)
+
+grid
+
+# split up plots and legend
+plots <- plot_grid(a + theme(legend.position = 'none'),
+          b + theme(legend.position = 'none'),
+          c + theme(legend.position = 'none'),
+          d + theme(legend.position = 'none'),
+          rel_heights = c(1,1,1,1), nrow = 2, ncol = 2)
+
+plots1 <- plot_grid(plots + theme(legend.position = 'none'),
+          legend, rel_heights = c(1,0.2),rel_widths = c(1, 0.2) , nrow = 1, ncol = 2)
+
+plots1
+
+# put plots in one row
+plot_grid(a + theme(legend.position = 'none'),
+          b + theme(legend.position = 'none'),
+          c + theme(legend.position = 'none'),
+          d + theme(legend.position = 'none'),
+          legend,
+          rel_heights = c(.1,.1,.1,.1,0.1),
+          rel_widths = c(.1,.1,.1,.1,0.05),
+          nrow = 1, ncol = 5)
+
+```
+
+```{r}
+L <- ggscatter(abiotic, x = "KF.air.temp", y = "flux.med",
+          add = "reg.line",  
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "lightgray"),
+          cor.coef = TRUE, cor.method = "pearson",
+          cor.coeff.args = list(label.x = 16, label.y = 20),
+          repel = T) + 
+        theme_bw() +
+        theme(text=element_text(size = 10, family = "Arial"),
+              axis.text.x=element_text(size=10, color = "black", family = "Arial"), 
+              axis.text.y = element_text(size=10, color = "black",  family = "Arial"),
+              title = element_text(size = 10, color = "black",  family = "Arial"), 
+              legend.title=element_blank(),
+              panel.grid.minor = element_blank(), 
+              panel.grid.major = element_blank(),
+              element_line(linewidth = 1, colour = "black")) +
+  xlab("Air temperature (\u00b0C)") +
+  ylab(expression(Methane ~ flux ~ (mu*g ~ CH[4]-C ~ ~ m^{-2} ~ hr^{-1})))
+
+M <- ggscatter(abiotic, x = "KF.plant.cover", y = "flux.med",
+          xlab = F,
+          ylab = F,
+          repel = T,
+          add = "reg.line",
+          conf.int = TRUE,  
+          add.params = list(color = "black", fill = "lightgray"),
+          cor.coef = TRUE, cor.method = "pearson",
+          cor.coeff.args = list(label.x = 1, label.y = 20)) +
+  theme_bw() +
+        theme(text=element_text(size = 10, family = "Arial"),
+              axis.text.x=element_text(size=10, color = "black", family = "Arial"), 
+              axis.text.y = element_text(size=10, color = "black",  family = "Arial"),
+              title = element_text(size = 10, color = "black",  family = "Arial"), 
+              legend.title=element_blank(),
+              panel.grid.minor = element_blank(), 
+              panel.grid.major = element_blank(),
+              element_line(linewidth = 1, colour = "black")) +
+  xlab("Relative plant cover (cm)")+
+  ylab("")
+
+N <- ggscatter(abiotic, x = "KF.soil.temp", y = "flux.med",
+          xlab = "air temperature (\u00b0C)",
+          ylab = "Methane flux (\u03BCg CH4-C m-2 hr-1)",
+          add = "reg.line",                                      
+          conf.int = TRUE,  
+          repel = T,
+          add.params = list(color = "black", fill = "lightgray"),
+          cor.coef = TRUE, cor.method = "pearson",
+          cor.coeff.args = list(label.x = 5, label.y = 20)) +
+   theme_bw() +
+        theme(text=element_text(size = 10, family = "Arial"),
+              axis.text.x=element_text(size=10, color = "black", family = "Arial"), 
+              axis.text.y = element_text(size=10, color = "black",  family = "Arial"),
+              title = element_text(size = 10, color = "black",  family = "Arial"), 
+              legend.title=element_blank(),
+              panel.grid.minor = element_blank(), 
+              panel.grid.major = element_blank(),
+              element_line(linewidth = 1, colour = "black")) +
+  xlab("Soil temperature (\u00b0C)")+
+  ylab("")
+
+O <- ggscatter(abiotic, x = "KF.VWC", y = "flux.med",
+          xlab = F,
+          ylab = F,
+          add = "reg.line",                                      
+          conf.int = TRUE,  
+          repel = T,
+          add.params = list(color = "black", fill = "lightgray"),
+          cor.coef = TRUE, cor.method = "pearson",
+          cor.coeff.args = list(label.x = 12, label.y = 20)) +
+     theme_bw() +
+        theme(text=element_text(size = 10, family = "Arial"),
+              axis.text.x=element_text(size=10, color = "black", family = "Arial"), 
+              axis.text.y = element_text(size=10, color = "black",  family = "Arial"),
+              title = element_text(size = 10, color = "black",  family = "Arial"), 
+              legend.title=element_blank(),
+              panel.grid.minor = element_blank(), 
+              panel.grid.major = element_blank(),
+              element_line(linewidth = 1, colour = "black")) +
+  xlab("VWC") +
+  ylab("")
+
+KF_corr_plot <- plot_grid(L,M,N,O, nrow = 1, ncol = 4)
+```
+
+Methane flux
+
+```{r}
+# load in data
+flux1 <- read.table("flux_data.csv", header = T, row.names = 1, sep = ",")
+
+# make sure months don't get re-organized alphabetically
+month_order <- flux1 %>%
+  mutate(month = factor(month, levels = c("May", "June", "July", "August", "October")))
+
+# plot
+CH4_plot <- ggplot(data = month_order, aes(x=month, y=flux)) + 
+    geom_boxplot(aes(fill = soil), show.legend = F) +
+    scale_fill_manual(values = c("white", "white"))+
+  my_theme +
+  geom_point(aes(color=factor(soil)), position = position_dodge(width = 0.75), size=2.5) +
+  scale_color_manual(values = c("#0073e6","#5ba300")) +
+  xlab("") +
+  ylab(expression(Methane ~ flux ~ (mu*g ~ CH[4]-C ~ ~ m^{-2} ~ hr^{-1}))) +
+  geom_hline(yintercept = c(0)) +
+  geom_vline(xintercept = c(0.4)) +
+  theme(panel.border = element_blank(),
+        axis.ticks.x = element_blank(), 
+        legend.text = element_text(size = 10), 
+        axis.text.y = element_text(size = 10), 
+        legend.position = c(.17,.98), 
+        legend.key.size = unit(.8, "line"), 
+        plot.margin = margin(t = 20, r = 20, b = 5, l = 5))
+
+print(CH4_plot)
+```
+ 
+Now we will look at the data that was collected at the site of the methane flux chambers, including the soil temperature measured by Puri lab members, rather than the remote research stations. The main difference is that we can include all of our replicate measurements here, whereas earlier we could only look at median values.
+
+```{r}
+# load in data
+KF_df <- read.table("KF_data_for_plot.csv", header = T, row.names = 1, sep = ",")
+
+# plot
+KF_plot <- ggplot(KF_df, aes(x=month, y=mean, fill=enviro)) +
+  geom_bar(width= 0.7, position=position_dodge(), stat="identity", colour='black') +
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=.4,position=position_dodge(.7)) +
+  scale_fill_manual(name = "enviro", values = c("#ff0000", "darkgray", "#fff800", "#00f0e5"), labels = c("air temperature (°C)", "relative plant height (cm)","soil temperature (°C)", "VWC" )) +
+  my_theme +
+  labs(x = "", y = "Average value") +
+  scale_x_discrete(labels=c("May","June","July", "August","October")) +
+  geom_hline(yintercept = c(0)) +
+  geom_vline(xintercept = c(0.4)) +
+  scale_y_continuous(breaks = c(-20, 0, 20, 40, 60, 80, 100, 120), limits = c(-20, 120)) +
+   theme(panel.border = element_blank(),
+        axis.ticks.x = element_blank(), 
+        legend.text = element_text(size = 10), 
+        axis.text.y = element_text(size = 10), 
+        legend.position = c(.88,.98), 
+        legend.key.size = unit(.8, "line"), 
+        plot.margin = margin(t = 20, r = 43, b = 5, l = 20)) +
+  guides(fill = guide_legend(# title.hjust = 1, # adjust title if needed
+                             label.position = "left",
+                             label.hjust = 1))
+
+print(KF_plot)
+```
+
+Plot all three plots together
+```{r}
+# combine methane and enviro plots
+top_plot <- plot_grid(CH4_plot, KF_plot, nrow = 1, rel_widths = c(1,1))
+
+# combine with correlation plots
+plot_grid(top_plot, KF_corr_plot, nrow = 2)
+
+plot_grid(
+  plot_grid(CH4_plot, KF_plot, nrow = 1, ncol = 2),
+  plot_grid(NULL, KF_corr_plot, NULL, nrow = 1, rel_widths = c(0.01, 1, .01)),
+  nrow = 2
+)
+```
+Judd depth from each day at each time point from the year 2021
+```{r}
+judd_depth <- read.csv("judd_depth.csv", header = T, row.names = 1, sep = ",")
+
+# Convert the date column in the data frame to POSIXct
+judd_depth$date <- as.POSIXct(judd_depth$date, format = "%Y/%m/%d %H:%M")
+
+# theme 
+my_theme_grid1 <- theme_bw() +
+        theme(text=element_text(size = 12), 
+        axis.text.x=element_text(angle = 45, hjust=1, size=10, color = "black"), 
+        axis.text.y = element_text(size=10, color = "black"),
+        title = element_text(size = 10, color = "black"), 
+        legend.title=element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank()
+        )
+
+# Example of plotting after conversion
+ggplot(judd_depth, aes(x = date, y = JuddDepth_Avg)) +
+  geom_line() +
+  scale_x_datetime(date_breaks = "1 month", date_labels = "%B") + # Format for month and day
+  labs(title = "", x = "", y = "Relative plant and snow depth (cm)") +
+  my_theme_grid1
+```
+Instead, do the average from each day
+```{r}
+library(dplyr)
+library(lubridate)
+
+# Create a new column for day and month
+judd_avg <- judd_depth %>%
+  mutate(dayMonth = format(date, "%m-%d"))  # Extracts month and day
+
+# Calculate the average for each day of the year
+averagePerDay <- judd_avg %>%
+  group_by(dayMonth) %>%
+  summarize(averageValue = mean(JuddDepth_Avg, na.rm = TRUE))
+
+# View the new data frame
+print(averagePerDay)
+
+
+averagePerDay <- averagePerDay %>%
+  mutate(dayMonth = as.Date(paste("2021", dayMonth), format="%Y %m-%d"))
+
+
+# Define custom breaks for each month
+month_breaks <- seq(as.Date("2021-01-01"), as.Date("2021-12-31"), by = "month")
+
+# Plotting
+ggplot(averagePerDay, aes(x = dayMonth, y = averageValue)) +
+  geom_line() +
+  scale_x_date(breaks = month_breaks, labels = format(month_breaks, "%B-%d")) +
+  scale_y_continuous(limits = c(-10,150)) +
+  labs(title = "", x = "2021", y = "Relative plant and snow depth (cm)") +
+  my_theme_grid1
+```
+
+volumetric water content at 5 cm from all time points
+```{r}
+vwc_daily <- read.csv("vwc_5cm.csv", header = T, row.names = 1, sep = ",")
+
+# Convert the date column in the data frame to POSIXct
+vwc_daily$date <- as.POSIXct(vwc_daily$date, format = "%Y/%m/%d %H:%M")
+
+# theme 
+my_theme_grid1 <- theme_bw() +
+        theme(text=element_text(size = 12), 
+        axis.text.x=element_text(angle = 45, hjust=1, size=10, color = "black"), 
+        axis.text.y = element_text(size=10, color = "black"),
+        title = element_text(size = 10, color = "black"), 
+        legend.title=element_blank(),
+        panel.grid.minor = element_blank(), 
+        )
+
+# Example of plotting after conversion
+ggplot(vwc_daily, aes(x = date, y = VWC_5cm_Avg)) +
+  geom_line() +
+  scale_x_datetime(date_breaks = "1 month", date_labels = "%B") + # Format for month and day
+  labs(title = "", x = "", y = "volumetric water content at 5 cm depth") +
+  my_theme_grid1
+
+
+# Create a new column for day and month
+vwc_avg <- vwc_daily %>%
+  mutate(dayMonth = format(date, "%m-%d"))  # Extracts month and day
+
+# Calculate the average for each day of the year
+averagePerDay_vwc <- vwc_avg %>%
+  group_by(dayMonth) %>%
+  summarize(averageValue = mean(VWC_5cm_Avg, na.rm = TRUE))
+
+# View the new data frame
+print(averagePerDay_vwc)
+
+
+averagePerDay_vwc <- averagePerDay_vwc %>%
+  mutate(dayMonth = as.Date(paste("2021", dayMonth), format="%Y %m-%d"))
+
+
+# Define custom breaks for each month
+month_breaks <- seq(as.Date("2021-01-01"), as.Date("2021-12-31"), by = "month")
+
+# Plotting
+ggplot(averagePerDay_vwc, aes(x = dayMonth, y = averageValue)) +
+  geom_line() +
+  scale_x_date(breaks = month_breaks, labels = format(month_breaks, "%B-%d")) +
+  scale_y_continuous(limits = c(0,40)) +
+  labs(title = "", x = "2021", y = "volumetric water content at 5 cm depth") +
+  my_theme_grid1
+
+```
+
+```{r}
+# stack these on top with a shared x axis
+
+judd_plot <- ggplot(averagePerDay, aes(x = dayMonth, y = averageValue)) +
+  geom_line() +
+  scale_x_date(breaks = month_breaks) +
+  scale_y_continuous(limits = c(-10,150)) +
+  labs(title = "", x = "", y = "Relative plant and snow depth (cm)") +
+  my_theme_grid1 +
+  theme(axis.text.x = element_blank())
+
+vwc_plot <- ggplot(averagePerDay_vwc, aes(x = dayMonth, y = averageValue)) +
+  geom_line() +
+  scale_x_date(breaks = month_breaks, labels = format(month_breaks, "%B-%d")) +
+  scale_y_continuous(limits = c(0,40)) +
+  labs(title = "", x = "2021", y = "VWC at 5 cm depth") +
+  my_theme_grid1 
+
+plot_grid(judd_plot, vwc_plot, nrow = 2)
+```
+
