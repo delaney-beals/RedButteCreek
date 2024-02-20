@@ -2,7 +2,7 @@
 title: 'RBC 16S analysis: abiotic variables'
 output: html_document
 ---
-..
+
 Written by Delaney Beals \| Date created: October 26, 2023 \| Date most recent edit: December 11, 2023
 
 Resource: <https://rstudio-pubs-static.s3.amazonaws.com/548738_f2de141dddb146879c535583eb8ba79c.html>
@@ -23,7 +23,7 @@ library(extrafont)
 
 ```{r}
 # Load in data
-abiotic_metadata <- read.csv("KF_metadata.csv", header = T, row.names = 1, sep = ",")
+abiotic_metadata <- read.csv("data/KF_metadata.csv", header = T, row.names = 1, sep = ",")
 abiotic <- as.data.frame(abiotic_metadata)
 
 head(abiotic)
