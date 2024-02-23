@@ -1,0 +1,292 @@
+---
+title: "June Oct 16S MERGE analysis -- relative abundance"
+output: html_notebook
+---
+
+# 16S Amplicon analysis in R
+
+Resource: <https://astrobiomike.github.io/amplicon/dada2_workflow_ex#analysis-in-r>
+
+### Getting set up
+
+```{r}
+# Identify the working directory
+getwd()
+
+# Set working directory to wherever your ASV count and taxonomy tables are
+setwd("C:/Users/Puri Lab/Desktop/Delaney/June_Oct_merge")
+
+# Check what packages are installed & loaded
+(.packages())
+```
+
+### Loading libraries/packages
+
+```{r}
+library(tidyverse) 
+library(phyloseq)
+library(vegan)
+library(DESeq2)
+library(dendextend)
+library(viridis)
+library(ggplot2)
+```
+
+```{r}
+# double check what packages are installed & loaded
+(.packages())
+```
+
+Occasionally a package will give me trouble, usually I can get it to download using the following. Just change the "DESeq2" to whatever package you need.
+
+```{r}
+install.packages("DESeq2")
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install("DESeq2") 
+```
+
+### Reading in our data
+
+We need our ASV counts table (samples in columns, ASVs in rows, counts in cells), our taxonmy table (assigning taxonomy to each ASV), and metadata (any additional information about the samples such as soil type, month etc.)
+
+```{r}
+# LOAD IN DATA
+
+bact_count_table <- read.table("June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+head(bact_count_table)
+
+bact_taxa_table <- as.matrix(read.table("June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
+# Need to specify row.names = 1 so that sample names do not appear as their own column. Instead they are the row headings (names).
+head(bact_taxa_table)
+
+bact_sample_info_table <- read.table("June_Oct_16S_MERGE_metadata.csv", header = T, row.names = 1, sep = ",") # We will also load in a metadata table that contains the necessary additional characteristics about the samples (type of culture method)
+head(bact_sample_info_table)
+```
+
+## BETA DIVERSITY
+
+Beta diversity is looking at how our samples compare to each other. This involves calculating metrics such as distances or dissimilarities based on pairwise comparisons of samples - they don't exist for a single sample, but rather only as metrics that relate samples to each other. We typically generate some exploratory figures to see how our data looks and how the samples relate to one another.
+
+We're going to use Euclidean distances to generate some exploratory visualizations of our samples. Since differences in sampling depths between samples can influence distance/dissimilarity metrics, we first need to somehow normalize across our samples.
+
+### Calculating relative abundance
+
+This is a point of contention for many in the field and is still being discussed. There does not seem to be a correct answer and practices that were once common that were later deemed inadmissible are now deemed admissible again. Essentially, there are three main ways of normalizing for sampling depth:
+
+1.  subsampling each sample down to the lowest sample's depth (**rarefaction**): can be done once or multiple times after which an average of multiple subsamples is calculated
+2.  turning counts into proportions of the total for each sample (**relative** **abundance**), which we will be using 
+3.  variance stabilizing transformation (**DESeq2**)
+
+```{r}
+# using bact_count_table, calculate the proportions 
+ASV_proportions_tab_t <- as.data.frame(t(apply(bact_count_table, 2, function(x) x/sum(x)))) 
+
+head(ASV_proportions_tab_t)
+```
+### Hierarchial clustering
+
+Let's generate a Euclidean distance matrix, make and plot a hierarchial clustering of our samples.
+
+```{r}
+euc_dist_abund <- dist(ASV_proportions_tab_t) #calculating our Euclidiean distance matrix
+euc_clust_abund <- hclust(euc_dist_abund, method="ward.D2")
+plot(euc_clust_abund)
+```
+From our first look at the cluster we can see the highest up separation is between June rip cDNA1-3 and the remaining samples. Moving down the dendrogram, we are separating by month, as all the June samples are on one side and the October samples are on the other. Further separations are a bit more difficult to parse. This looks different from the cluster dendrogram we generated using our variance stabilized transformed count data. 
+
+```{r}
+euc_dend_abund <- as.dendrogram(euc_clust_abund, hang=0.1)
+dend_cols_abund <- as.character(bact_sample_info_table$color_NA[order.dendrogram(euc_dend_abund)])
+labels_colors(euc_dend_abund) <- dend_cols_abund
+plot(euc_dend_abund, ylab="VST Euc. dist.") #this changes the look of the cluster slightly but the results are the same
+```
+
+```{r}
+dend_cols_abund <- as.character(bact_sample_info_table$color_soil[order.dendrogram(euc_dend_abund)])
+labels_colors(euc_dend_abund) <- dend_cols_abund
+plot(euc_dend_abund, ylab="VST Euc. dist.") #this changes the look of the cluster slightly but the results are the same
+```
+```{r}
+dend_cols_abund <- as.character(bact_sample_info_table$color_month[order.dendrogram(euc_dend_abund)])
+labels_colors(euc_dend_abund) <- dend_cols_abund
+plot(euc_dend_abund, ylab="VST Euc. dist.") #this changes the look of the cluster slightly but the results are the same
+```
+
+Based on these dendrograms, it looks like the order of separation is by month, then nucleic acid template, then by soil type. 
+
+### PCoA Ordination
+
+Generally speaking, ordinations provide visualizations of sample-relatedness based on dimension reduction - this is where the 'multidimensional scaling' term (MDS) fits in. The 'dimensions' could be, for instance, whatever you measured in each sample, in our case counts of ASVs. Principle coordinates analysis (PCoA) is a type of multidimensional scaling that operates on dissimilarities or distances. In Pcoa you generate Eigen values from data, draw lines through that data that represents the most amount of variation. There are other ways to look at this same thing, including non-metric multidimensional scaling (NMDS).
+
+Here we're going to generate and plot our PCoA with phyloseq, because it is very convenient for doing such things. But because we're still doing beta diversity here, we want to use our relative abundance table. So we're going to make a phyloseq object with our relative abundance-transformed table and generate the PCoA from that.
+
+```{r}
+# making phyloseq object with transformed table
+ASV_proportions_tab <- as.data.frame(t(ASV_proportions_tab_t))
+bact_abund_count_phy <- otu_table(ASV_proportions_tab, taxa_are_rows = TRUE)
+
+sample_info_abund_bact_phy <- sample_data(bact_sample_info_table)
+
+bact_abund_physeq <- phyloseq(bact_abund_count_phy, sample_info_abund_bact_phy)
+
+# generating and visualizing the PCoA with phyloseq
+bact_abund_pcoa <- ordinate(bact_abund_physeq, method = "PCoA", distance = "bray")
+
+bact_eigen_values_abund <- bact_abund_pcoa$values$Eigenvalues # allows us to scale the axes according to their magnitude of separating apart the samples
+
+
+plot_ordination(bact_abund_physeq,bact_abund_pcoa, type="sample", color="replicate") +
+  labs(col="Samples") +
+  geom_point(size = 2) +
+  theme_bw()
+```
+
+
+```{r}
+plot_ordination(bact_abund_physeq,bact_abund_pcoa, type="sample", color="month") +
+  labs(col="Samples") +
+  geom_point(size = 2) +
+  theme_bw()
+
+plot_ordination(bact_abund_physeq,bact_abund_pcoa, type="sample", color="soil") +
+  labs(col="Samples") +
+  geom_point(size = 2) +
+  theme_bw()
+
+plot_ordination(bact_abund_physeq,bact_abund_pcoa, type="sample", color="template") +
+  labs(col="Samples") +
+  geom_point(size = 2) +
+  theme_bw()
+```
+
+When we color by different categories we can see that separating by month gives us two distinct communities, then coloring by soil type gives a little bit of cross over, and then coloring by template totally intermingles all our points. This follows the same pattern as was shown in the dendrograms. 
+
+**NOTE**: If we want to look at the non-metric multidimensional scaling (NMDS) plot, refer to that section in the "June Oct 16S merge analysis -- DESeq2" version of this workflow, as the NMDS require the bact_counts_table as input, which is unaffected by either DESeq2 or relative abundance, so it will be the same no matter where we do the analysis. 
+
+### PERMANOVA/adonis to test for differences in microbial composition between soil types and months
+
+First, we create a distance matrix using Bray-Curtis distance from log normalized counts table for bacteria ASVs.
+
+```{r}
+abund_bray_dist <- vegdist(ASV_proportions_tab_t)
+```
+
+Before running the PERMANOVA, we must assess if there is a sufficient level of homogeneity of dispersion with groups using the betadisper/ANOVA function in the vegan package (p value \< 0.05 indicates within-group dispersion is significantly different)
+
+```{r}
+set.seed(777) #don't change this
+anova(betadisper(abund_bray_dist, bact_sample_info_table$month)) 
+```
+There is not a significant difference in the variance of samples from June and the variance of samples from October. In other words, within their respective bubbles, either month has a similar amount of spread amongst their individual points. We can trust the results of our PERMANOVA test. 
+
+```{r}
+# PERMANOVA test
+adonis2(abund_bray_dist ~ bact_sample_info_table$month, permutations = 9999)
+```
+Looks like there is a significant difference in the communities from June and October samples. 
+
+```{r}
+set.seed(777) #don't change this
+anova(betadisper(abund_bray_dist, bact_sample_info_table$soil)) 
+# PERMANOVA test
+adonis2(abund_bray_dist ~ bact_sample_info_table$soil, permutations = 9999)
+```
+When looking at the comparison between soil types, we see that there is equal amounts of variation within all the riparian samples as there is within all the upland samples. A PERMANOVA test between soil types gives a significant result, suggesting that the soil type also plays a role in how these communities differ. 
+
+```{r}
+set.seed(777) #don't change this
+anova(betadisper(abund_bray_dist, bact_sample_info_table$template)) 
+# PERMANOVA test
+adonis2(abund_bray_dist ~ bact_sample_info_table$template, permutations = 9999)
+```
+
+
+Let's subset the template types and look at these data again. 
+```{r}
+# create variable that holds the gDNA samples
+gDNA_wanted <- c("gDNA")
+
+# create a tibble of our vst trans counts to make it easier to merge with the metadata table
+ASV_proportions_tbl_t <- ASV_proportions_tab_t %>%
+  as_tibble(rownames = "sample")
+
+# create a tibble of our metadata, merge it with vst counts table, then use the variable holding gDNA samples to remove any cDNA samples. We will also remove the metadata columns after we do the cDNA filtering step and convert back to a data frame. 
+gDNA_abund_tbl <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., ASV_proportions_tbl_t, by="sample") %>%
+  filter(template %in% gDNA_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -color_NA,
+         -color_month, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+# new distance matrix of only gDNA
+gDNA_abund_euc_dist <- dist(gDNA_abund_tbl)
+
+gDNA_abund_bray_dist <- vegdist(gDNA_abund_tbl)
+```
+
+```{r}
+euc_clust_gDNA_abund <- hclust(gDNA_abund_euc_dist, method="ward.D2")
+plot(euc_clust_gDNA_abund)
+```
+```{r}
+# need to filter our metadata table too
+gDNA_abund_metadata <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% gDNA_wanted) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+set.seed(777) #don't change this
+anova(betadisper(gDNA_abund_bray_dist, gDNA_abund_metadata$month)) 
+# PERMANOVA test
+adonis2(gDNA_abund_bray_dist ~ gDNA_abund_metadata$month, permutations = 9999)
+```
+```{r}
+set.seed(777) #don't change this
+anova(betadisper(gDNA_abund_bray_dist, gDNA_abund_metadata$soil)) 
+# PERMANOVA test
+adonis2(gDNA_abund_bray_dist ~ gDNA_abund_metadata$soil, permutations = 9999)
+```
+
+
+Within the gDNA-derived communities, there is a significant difference between the populations in June and in October.  In other words riparian and upland soil from June are, as a group, significantly different from riparian and upland soil from October. 
+
+```{r}
+# making phyloseq object with transformed table
+gDNA_abund_tbl_t <- as.data.frame(t(gDNA_abund_tbl))
+gDNA_abund_count_phy <- otu_table(gDNA_abund_tbl_t, taxa_are_rows = TRUE)
+
+sample_info_abund_gDNA_phy <- sample_data(gDNA_abund_metadata)
+
+gDNA_abund_physeq <- phyloseq(gDNA_abund_count_phy, sample_info_abund_gDNA_phy)
+
+# generating and visualizing the PCoA with phyloseq
+gDNA_abund_pcoa <- ordinate(gDNA_abund_physeq, method = "PCoA", distance = "bray")
+
+gDNA_eigen_values_abund <- gDNA_abund_pcoa$values$Eigenvalues # allows us to scale the axes according to their magnitude of separating apart the samples
+
+
+plot_ordination(gDNA_abund_physeq,gDNA_abund_pcoa, type="sample", color="month", shape = "soil") +
+  labs(col="Samples") +
+  geom_point(size = 3) +
+  theme_bw()
+```
+```{r}
+set.seed(1)
+gDNA_abund_tbl_NMDS <- metaMDS(gDNA_abund_bray_dist) %>%
+    scores() %>%
+  as_tibble(rownames="sample")
+
+metadatagDNA_NMDS <- cross_join(gDNA_abund_metadata, gDNA_abund_tbl_NMDS)
+
+metadatagDNA_NMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=sample)) +
+  geom_point(size=2) +
+  theme_bw()
+```
+

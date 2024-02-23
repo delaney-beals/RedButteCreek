@@ -1,0 +1,74 @@
+---
+title: "Heatmap"
+output: html_notebook
+---
+
+Following along with How to use R to create a heatmap from a distance matrix with ggplot2 (CC209) by Riffomonas Project (<https://www.youtube.com/watch?v=3iOTGaWQZp4>)
+
+```{r}
+library(tidyverse)
+library(vegan)
+```
+
+```{r}
+gDNA_comm_tbl <- bact_count_table_t %>%
+    as_tibble(rownames = "sample") %>%
+    pivot_longer(-sample) %>%
+    inner_join(., sample_lookup, by="sample") %>%
+    filter(template %in% gDNA_wanted) %>%
+    group_by(sample) %>%
+    mutate(N = sum(value)) %>%
+    ungroup() %>%
+    select(-N) %>%
+    pivot_wider(names_from = "name", values_from = "value", values_fill = 0) %>%
+    select(-month, -soil, -template, -replicate, -names) %>%
+    column_to_rownames("sample") 
+
+head(gDNA_comm_tbl)
+```
+
+In this step we calculate the avg distance which creates a distance matrix, but if we want to do a heatmap we need to turn the distance matrix into a matrix and then that matrix into a tibble. We will temporarily call the row names "A" because we will take the column names and make those another column name for "B"
+
+```{r}
+gDNA_comm_dist <- avgdist(gDNA_comm, dmethod="bray", sample = 116838) %>%
+  as.matrix() %>%
+  as_tibble(rownames="A")
+
+gDNA_comm_dist
+```
+
+That gives a square tibble. Now if we want to take the column names and make this longer:
+
+```{r}
+bray <- gDNA_comm_dist %>%
+  pivot_longer(-A, names_to="B", values_to = "distances")
+
+bray
+```
+
+Great, now we have our tibble in long form.
+
+Let's plot bray.
+
+```{r}
+bray %>%
+  ggplot(aes(x=A, y=B, fill=distances)) +
+  geom_tile()
+```
+
+now lets look at a heatmap made with jaccard instead of bray
+
+```{r}
+jaccard <- avgdist(gDNA_comm, dmethod="jaccard", sample = 116838) %>%
+  as.matrix() %>%
+  as_tibble(rownames="A")
+
+jaccard2 <- gDNA_comm_dist %>%
+  pivot_longer(-A, names_to="B", values_to = "distances")
+
+jaccard2 %>%
+  ggplot(aes(x=A, y=B, fill=distances)) +
+  geom_tile()
+```
+
+no difference!except maybe jaccard distances are more different since the colors are a bit lighter

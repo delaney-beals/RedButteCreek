@@ -1,0 +1,241 @@
+---
+title: "RBC 16S analysis: MOB visualizations (family level)"
+output: github_document
+---
+Written by Delaney Beals \| Date created: January 23, 2024 \| Date most recent edit: January 23, 2024
+
+# Relative abundance composition plot for family-level proportions
+
+Resource: <https://astrobiomike.github.io/amplicon/dada2_workflow_ex>
+
+```{r message=FALSE, warning=FALSE}
+# load in libraries
+library(tidyverse) 
+library(phyloseq)
+library(vegan)
+library(DESeq2)
+library(dendextend)
+library(viridis)
+library(ggplot2)
+library(readr)
+library(gridExtra)
+library(cowplot)
+library(dplyr)
+library(forcats)
+library(patchwork)
+library(ggpubr)
+library(corrplot)
+(.packages())
+```
+
+Making our phyloseq object
+```{r}
+# LOAD IN DATA
+bact_count_table <- read.table("June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+bact_taxa_table <- as.matrix(read.table("June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
+bact_sample_info_table <- read.table("June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",") 
+
+# first we need to create a phyloseq object using our un-transformed count table
+tax_mat <- as.matrix(bact_taxa_table)
+TAX <- phyloseq::tax_table(tax_mat)
+
+samples = sample_data(bact_sample_info_table)
+
+otu_mat <- as.matrix(bact_count_table)
+OTU = otu_table(otu_mat, taxa_are_rows = TRUE)
+ASV_physeq <- phyloseq(TAX, OTU, samples)
+```
+
+## Calculating relative abundance
+
+First make a table with proportions of reads. This will essentially be a normalization step in that we are calculating relative abundance of every ASV within each sample.
+```{r}
+fam_counts_tab <- otu_table(tax_glom(ASV_physeq, taxrank="Family")) 
+
+family_tax_vec <- as.vector(phyloseq::tax_table(tax_glom(ASV_physeq, taxrank="Family"))[,5]) 
+
+rownames(fam_counts_tab) <- as.vector(family_tax_vec)
+
+unclassified_tax_counts_fam <- colSums(bact_count_table) - colSums(fam_counts_tab)
+
+# and we'll add this row to our phylum count table:
+
+fam_and_unidentified_counts_tab <- rbind(fam_counts_tab, "Unclassified"=unclassified_tax_counts_fam)
+
+identical(colSums(fam_and_unidentified_counts_tab), colSums(bact_count_table)) # TRUE
+
+fam_taxa_proportions_tab <- apply(fam_and_unidentified_counts_tab, 2, function(x) x/sum(x)*100)
+
+#transform the table so that genera are in columns
+
+write.table(fam_taxa_proportions_tab, "fam_proportions.tsv", sep = "\t", quote = F, col.names = NA)
+```
+
+
+```{r}
+# transpose table so that samples are in rows, genera are in columns
+fam_taxa_proportions_tab_df <- as.data.frame(t(fam_taxa_proportions_tab))
+
+# classify our families into functional groups
+methanotrophs_fam <- c("Methylocystaceae|Beijerinckiaceae|Methylococcaceae|Methylothermaceae|Crenotrichaceae|Methylacidiphilaceae")
+
+methylotrophs_fam <- c("Methylocystaceae|Methylobacteriaceae|Hyphomicrobiaceae|Rhodobacteraceae|Comamonadaceae|Oxalobacteraceae|Rhodocyclaceae|Methylophilaceae|Thiotrichaceae|Flavobacteriaceae|Burkholderiaceae")
+
+meth_all_fam <- c("Methylocystaceae|Beijerinckiaceae|Methylococcaceae|Methylothermaceae|Crenotrichaceae|Methylacidiphilaceae|Methylocystaceae|Methylobacteriaceae|Hyphomicrobiaceae|Rhodobacteraceae|Comamonadaceae|Oxalobacteraceae|Rhodocyclaceae|Methylophilaceae|Thiotrichaceae|Flavobacteriaceae|Burkholderiaceae")
+
+# create new tables containing only the genera groups we want
+methanotrophs_prop_fam <- fam_taxa_proportions_tab_df %>% select(matches(methanotrophs_fam))
+methylotrophs_prop_fam <- fam_taxa_proportions_tab_df %>% select(matches(methylotrophs_fam))
+meth_all_prop_fam <- fam_taxa_proportions_tab_df %>% select(matches(meth_all_fam))
+
+# transpose table again so that rows are genera and columns are samples
+methanotrophs_prop1_fam <- as.data.frame(t(methanotrophs_prop_fam))
+methylotrophs_prop1_fam <- as.data.frame(t(methylotrophs_prop_fam))
+meth_all_prop1_fam <- as.data.frame(t(meth_all_prop_fam))
+
+# make sure we are in a data frame
+methanotrophs_prop_tab_fam <- methanotrophs_prop1_fam %>%
+  as_tibble(rownames= "Family") %>% 
+  as.data.frame(rownames=paste0("Family", 1:24)) 
+
+methylotrophs_prop_tab_fam <- methylotrophs_prop1_fam %>%
+  as_tibble(rownames= "Family") %>% 
+  as.data.frame(rownames=paste0("Family", 1:24))
+
+meth_all_prop_tab_fam <- meth_all_prop1_fam %>%
+  as_tibble(rownames= "Family") %>% 
+  as.data.frame(rownames=paste0("Family", 1:24))
+
+MOB_prop_fam <- pivot_longer(methanotrophs_prop_tab_fam, !Family, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+NMM_prop_fam <- pivot_longer(methylotrophs_prop_tab_fam, !Family, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+prop_fam <- pivot_longer(meth_all_prop_tab_fam, !Family, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+
+# merging this table with the table containing our proportions
+prop_info_fam <- merge(prop_fam, sample_info_for_merge) 
+MOB_prop_info_fam <- merge(MOB_prop_fam, sample_info_for_merge) 
+NMM_prop_info_fam <- merge(NMM_prop_fam, sample_info_for_merge) 
+```
+
+```{r}
+# set the ggplot2 theme
+my_theme_grid <- theme_bw() +
+        theme(text=element_text(size = 12), 
+        axis.text.x=element_text(size=10, color = "black"), 
+        axis.text.y = element_text(size=10, color = "black"),
+        title = element_text(size = 10, color = "black"), 
+        legend.title=element_blank()
+        )
+```
+
+
+```{r}
+# reordering the labels
+new_prop_info_fam <- prop_info_fam %>%
+  mutate(Family = fct_relevel(Family,  "Flavobacteriaceae", "Comamonadaceae", "Burkholderiaceae","Rhodocyclaceae","Rhodobacteraceae","Oxalobacteraceae","Hyphomicrobiaceae","Methylocystaceae","Beijerinckiaceae","Methylococcaceae","Methylobacteriaceae"))
+
+# overall plot
+ggplot(new_prop_info_fam, aes(Proportion, Family)) +
+  geom_jitter(aes(color=factor(monthsoil), shape=factor(template)), 
+              size=2.5, width=0.15, height=0) +
+  scale_x_continuous(breaks = c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)) +
+  my_theme_grid
+
+# zooming into smaller percentages
+ggplot(new_prop_info_fam, aes(Proportion, Family)) +
+  geom_jitter(aes(color=factor(monthsoil), shape=factor(template)), 
+              size=2.5, width=0.15, height=0) +
+  xlim(0, 0.5)+
+  my_theme_grid 
+```
+```{r}
+prop_info_gDNA_fam <-meth_all_prop_fam[grepl("gDNA", rownames(meth_all_prop_fam)), ]
+prop_info_cDNA_fam <-meth_all_prop_fam[grepl("cDNA", rownames(meth_all_prop_fam)), ]
+```
+
+```{r}
+# re-order families
+desired_order <- c("Beijerinckiaceae","Methylobacteriaceae", "Methylococcaceae", "Methylocystaceae","Methylophilaceae", 
+                   "Flavobacteriaceae", "Comamonadaceae", "Burkholderiaceae") 
+
+# Reorder the columns of the dataframe
+new_com_gDNA_fam <- prop_info_gDNA_fam[, desired_order]
+
+# create a correlation matrix with the data
+cc_pears_fam = cor(new_com_gDNA_fam, method = "pearson")
+```
+
+```{r}
+# to get P values
+res2 <- cor.mtest(new_com_gDNA_fam, conf.level = .95)
+
+#merged option
+corrplot.mixed(cc_pears_fam, upper= "circle",   tl.pos = "lt", tl.col = "black", tl.cex = 0.7, p.mat = res2$p, insig = "pch", sig.level = c(.05), pch.cex = 2, pch.col = "black", lower = "number",  number.cex = 0.7, tl.srt = 45)
+```
+```{r}
+# re-order families
+desired_order <- c("Beijerinckiaceae","Methylobacteriaceae", "Methylococcaceae", "Methylocystaceae","Methylophilaceae", 
+                   "Flavobacteriaceae", "Comamonadaceae", "Burkholderiaceae") 
+
+# Reorder the columns of the dataframe
+new_com_cDNA_fam <- prop_info_cDNA_fam[, desired_order]
+
+# create a correlation matrix with the data
+cc_pears_fam_c = cor(new_com_cDNA_fam, method = "pearson")
+```
+
+```{r}
+# to get P values
+res3 <- cor.mtest(new_com_cDNA_fam, conf.level = .95)
+
+#merged option
+corrplot.mixed(cc_pears_fam_c, upper= "circle",   tl.pos = "lt", tl.col = "black", tl.cex = 0.7, p.mat = res3$p, insig = "pch", sig.level = c(.05), pch.cex = 2, pch.col = "black", lower = "number",  number.cex = 0.7, tl.srt = 45)
+```
+
+```{r}
+MOB_NMH_gDNA_fam <- read.table("MOB_NMH_gDNA_fam.csv", header = T, row.names = 1, sep = ",")
+```
+
+```{r}
+#calculate correlation
+gf_df <- Hmisc::rcorr(as.matrix(MOB_NMH_gDNA_fam), type=c("pearson"))
+
+corrplot(corr=gf_df$r[13:17, 1:12], 
+         p.mat=gf_df$P[13:17, 1:12], 
+         tl.col = "black",
+         tl.srt = 45,
+         insig = "pch", 
+         sig.level = c(.05), 
+         pch.cex = 3, 
+         pch.col = "black", 
+         addCoef.col="black",  
+         number.cex=0.7,
+         number.digits = 2,
+         cl.length = 5,
+         cl.align.text = "l")
+
+```
+
+```{r}
+MOB_NMH_cDNA_fam <- read.table("MOB_NMH_cDNA_fam.csv", header = T, row.names = 1, sep = ",")
+```
+
+```{r}
+#calculate correlation
+cf_df <- Hmisc::rcorr(as.matrix(MOB_NMH_cDNA_fam), type=c("pearson"))
+
+corrplot(corr=cf_df$r[13:17, 1:12], 
+         p.mat=cf_df$P[13:17, 1:12], 
+         tl.col = "black",
+         tl.srt = 45,
+         insig = "pch", 
+         sig.level = c(.05), 
+         pch.cex = 3, 
+         pch.col = "black", 
+         addCoef.col="black",  
+         number.cex=0.7,
+         number.digits = 2,
+         cl.length = 9,
+         cl.align.text = "l")
+```
+```
+

@@ -1,0 +1,81 @@
+---
+title: 'RBC 16S analysis: UpSet plots'
+output: html_document
+---
+
+Written by Delaney Beals \| Date created: October 23, 2023 \| Date most recent edit: December 11, 2023
+
+# Shared and unique ASVs in samples
+
+The goal is to look at what ASVs are unique to each sample and which ASVs are shared between different sets of samples. This analysis does not take into account abundances of ASVs, only if a given ASV is detected or not detected.
+
+```{r}
+library(phyloseq)
+library(MicrobiotaProcess)
+library(UpSetR)
+```
+
+```{r}
+# load in data
+bact_count_table <- read.table("June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+bact_taxa_table <- as.matrix(read.table("June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
+bact_sample_info_table <- read.table("June_Oct_16S_MERGE_metadata.csv", header = T, row.names = 1, sep = ",")
+
+# transform to phyloseq objects
+OTU = phyloseq::otu_table(bact_count_table, taxa_are_rows = TRUE)
+TAX = phyloseq::tax_table(bact_taxa_table)
+samples = sample_data(bact_sample_info_table)
+
+# create phyloseq object
+ASV_physeq <- phyloseq(OTU, TAX, samples)
+
+# generate data for upset plot
+upset.ASV <- get_upset(obj = ASV_physeq, factorNames = "replicate")
+```
+
+Generate an UpSet plot showing all samples.
+
+```{r}
+upset(upset.ASV, sets=unique(as.vector(sample_data(ASV_physeq)$replicate)),
+      sets.bar.color = "#56B4E9")
+
+upset(upset.ASV, sets=unique(as.vector(sample_data(ASV_physeq)$replicate)),
+      order.by = "degree",
+      sets.bar.color = "#56B4E9")
+```
+
+Breaking up into more plots that are easier to view.
+
+```{r}
+upset.ASV %>% upset(., keep.order = T, sets = c("June-rip-gDNA", "June-up-gDNA", "Oct-rip-gDNA", "Oct-up-gDNA"), sets.bar.color = "#56B4E9", order.by = "degree") 
+
+upset.ASV %>% upset(., keep.order = T, sets = c("June-rip-cDNA", "June-up-cDNA", "Oct-rip-cDNA", "Oct-up-cDNA"), sets.bar.color = "#56B4E9", order.by = "degree")
+
+upset.ASV %>% upset(., keep.order = T, sets = c("June-rip-gDNA", "June-rip-cDNA", "June-up-gDNA", "June-up-cDNA"), sets.bar.color = "#56B4E9", order.by = "degree")
+
+upset.ASV %>% upset(., keep.order = T, sets = c("Oct-rip-gDNA", "Oct-rip-cDNA", "Oct-up-gDNA", "Oct-up-cDNA"), sets.bar.color = "#56B4E9", order.by = "degree")
+```
+
+```{r}
+upset(upset.ASV, 
+      keep.order = T, 
+      sets = c("June-rip-gDNA","June-up-gDNA",
+               "Oct-rip-gDNA","Oct-up-gDNA"),
+      sets.bar.color = "#56B4E9", 
+      order.by = "degree",
+      sets.x.label = "total ASV count", 
+      mainbar.y.label = "ASV intersection size", 
+      text.scale = c(1.5, 1.5, 1.25, 1, 1.25, 1.25))
+
+                
+                
+upset(upset.ASV, 
+      keep.order = T, 
+      sets = c("June-rip-cDNA","June-up-cDNA",
+               "Oct-rip-cDNA","Oct-up-cDNA"), 
+      sets.bar.color = "#56B4E9", 
+      order.by = "degree",
+      sets.x.label = "total ASV count", 
+      mainbar.y.label = "ASV intersection size", 
+      text.scale = c(1.5, 1.5, 1.25, 1, 1.25, 1.25))
+```

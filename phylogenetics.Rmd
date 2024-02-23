@@ -1,0 +1,133 @@
+---
+title: "MICROBIOME SIGNIFICANCE"
+output: html_notebook
+---
+
+source: https://wiki.duke.edu/display/AnthroTree/11.1+Phylogenetic+community+ecology+in+R
+
+```{r}
+library(picante)
+```
+
+We want our data to be in the format of community ID in row headers, ASVs in column headers, and proportions in cells using bact_count_table, calculate the proportions
+
+```{r}
+ASV_proportions_tab <- apply(bact_count_table, 2, function(x) x/sum(x)*100)
+head(ASV_proportions_tab)
+```
+
+transform  our data to be in the format of community ID in row headers, ASVs in column headers, and proportions in cells
+```{r}
+ASV_proportions_tab_t <- as.data.frame(t(ASV_proportions_tab))
+head(ASV_proportions_tab_t)
+```
+
+Create our phylogeny, which is contained within our ASV_phyloseq that we made in earlier analysis steps
+```{r}
+ASV_tree = rtree(ntaxa(ASV_physeq), rooted=TRUE, tip.label=taxa_names(ASV_physeq))
+str(ASV_tree)
+```
+
+
+picante assumes that the taxa in your phylogeny and the taxa in your dataset are in the SAME ORDER. This is easy to do:
+```{r}
+ASV_proportions_tab_t<-ASV_proportions_tab_t[,ASV_tree$tip.label]
+
+head(ASV_proportions_tab_t)
+```
+
+
+
+We can now look at the distribution of species within our three communities across the phylogeny. Really big, this takes a while to run and is honestly impossible to read. 
+
+```{r}
+par(mfrow = c(2, 2))
+plot(ASV_tree)
+for (i in rownames(ASV_proportions_tab_t)) {
+  plot(ASV_tree, show.tip.label = FALSE, main = i)
+  tiplabels(tip = which(ASV_proportions_tab_t[i, ] > 0), pch = 19, cex = 2, col ="red")
+  legend("topleft" , i, bty = "n")
+}
+```
+
+
+## COMMUNITY PHYLOGENETICS MEASURES
+
+Phylogenetic diversity (Faith 1992): Phylogenetic diversity (PD) calculates the total branch length spanned by the species within a community. To calculate PD for our communities:
+```{r}
+bact.pd <- pd(ASV_proportions_tab_t, ASV_tree, include.root = TRUE)
+bact.pd
+```
+This includes all our data in the PD calculation. Let's separate the data by template type and then run pd function again to see how the numbers change. 
+
+```{r}
+# create a vector so we only select gDNA-derived samples
+gDNA_wanted <- c("gDNA")
+
+ASV_df <- ASV_proportions_tab_t %>%
+    as_tibble(rownames = "sample") %>%
+    pivot_longer(-sample) %>%
+    inner_join(., sample_lookup, by="sample") %>%
+    filter(template %in% gDNA_wanted) %>%
+    select(-month, -soil, -template, -replicate, -names, -flux) %>%
+    group_by(sample) %>%
+    pivot_wider() %>%
+    as.data.frame(rownames=paste0("sample", 1:12)) %>%
+    column_to_rownames("sample")
+
+head(ASV_df)
+```
+
+```{r}
+gDNA.pd <- pd(ASV_df, ASV_tree, include.root = TRUE)
+gDNA.pd
+```
+
+Okay so these values are the same as when we kept the data set all together, which means we don't have to separate by template type and run in parallel. 
+
+
+```{r}
+bact.pd.tbl <- bact.pd %>%
+  as_tibble(rownames="sample")
+ASV_proportions_tbl <- ASV_proportions_tab_t %>%
+  as_tibble(rownames="sample")
+
+
+ASV_info <- ASV_proportions_tab_t %>%
+    as_tibble(rownames = "sample") %>%
+    inner_join(., sample_lookup, by="sample") %>%
+    select(sample, month, soil, template, replicate, flux) %>%
+    group_by(sample) %>%
+    inner_join(., bact.pd.tbl, by="sample") %>%
+    as.data.frame(rownames=paste0("sample", 1:24)) %>%
+    column_to_rownames("sample")
+
+ASV_info
+```
+
+Now calculate distance matrices
+```{r}
+ASV_euc_dist <- dist(ASV_info)
+
+ASV_euc_clust <- hclust(ASV_euc_dist, method="ward.D2")
+
+plot(ASV_euc_clust)
+```
+
+
+Remove non-integer values like month, soil type. 
+```{r}
+
+ASV_PD <- ASV_info %>%
+    as_tibble(rownames = "sample") %>%
+    select(sample, flux, PD, SR) %>%
+    group_by(sample) %>%
+    as.data.frame(rownames=paste0("sample", 1:24)) %>%
+    column_to_rownames("sample")
+
+PD_euc_dist <- dist(ASV_PD)
+
+PD_euc_clust <- hclust(PD_euc_dist, method="ward.D2")
+plot(PD_euc_clust)
+```
+

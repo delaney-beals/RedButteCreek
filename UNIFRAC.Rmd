@@ -1,0 +1,566 @@
+---
+title: "RBC 16S analysis: Mantel tests with UniFrac and Bray-Curtis"
+output: html_document
+---
+
+Written by Delaney Beals \| Date created: October 23, 2023 \| Date most recent edit: December 11, 2023
+
+# Introduction to phylogenetic diversity
+
+Source: Using the mantel test to compare ecological matrices using the vegan R package (CC211) <https://www.youtube.com/watch?v=EXNOgmUyPfY&t=569s>
+
+Analyzing microbial diversity can be divided into two different approaches
+
+1.  Bins: take sequence data and assign them into bins, likely based on taxonomy or how similar the sequences are
+
+    uses: richness, number of types, Shannon diversity, beta diversity--who is there and in what abundance
+
+2.  Phylogenetic: build phylogenetic trees from our sequences and then look at the structure of those trees (branch length, ordering within the tree) to figure out what branch length is unique to one sample or another
+
+    uses: phylogenetic diversity, UniFrac -- unique fraction
+
+Measuring beta diversity approaches
+
+-   (phylogenetic) unweighted UniFrac: membership based metric of diversity, similar to jaccard. Have a pool of taxa from one community and another pool of taxa from another community and see how much those overlap/how many taxa are shared between communities. Doesn't take into account abundances of anything
+
+-   (phylogenetic) weighted UniFrac: similar to unweighted except we are weighting the branch length or the unique branch length based on the frequency of that branch/the individual that that branch is going out to
+
+-   (bins) structure: based on the membership but also based on the abundance of taxa in the bins; in Bray-Curtis we incorporate the relative abundance or the frequency that we see each taxa
+
+As our data sets get larger, phylogenetic approaches get less tractable, as building the tree can be difficult. The bin based method is better since we groups things based on taxa.
+
+Let's start by calculating weighted UniFrac distances for the Red Butte Creek June/October dataset. In the main June_Oct_16S_MERGE_analysis.R script, we put all of our ASV counts and taxonomy tables which assigned taxonomy to each ASV into a phyloseq object called ASV_physeq.
+
+```{r message=FALSE, warning=FALSE}
+library(phyloseq)
+library(picante)
+library(tidyverse)
+library(vegan)
+```
+
+## Making a phylogenetic tree
+
+```{r}
+# first we need to create a phyloseq object using our un-transformed count table
+bact_count_table <- read.table("June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+bact_taxa_table <- as.matrix(read.table("June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
+bact_sample_info_table <- read.table("June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",")
+
+count_tab_phy <- otu_table(bact_count_table, taxa_are_rows=T)
+tax_tab_phy <- phyloseq::tax_table(bact_taxa_table)
+
+ASV_physeq <- phyloseq(count_tab_phy, tax_tab_phy, bact_sample_info_table)
+```
+
+Resource: <https://kembellab.ca/r-workshop/biodivR/SK_Biodiversity_R.html>
+
+We have a phylogeny within the phyloseq object we created in the early steps of our analysis. We need to make a phylogenetic tree with this information of class "phylo" using the picante package.
+
+```{r}
+ASV_tree = rtree(ntaxa(ASV_physeq), rooted=TRUE, tip.label=taxa_names(ASV_physeq))
+
+str(ASV_tree)
+
+class(ASV_tree)
+```
+
+We know we made a phylogenetic tree with class "phylo" which we confirmed by running class(ASV_tree).
+
+Now let's put our phylogenetic tree back into our phyloseq object.
+
+```{r}
+ASV_physeq_tree = merge_phyloseq(ASV_physeq, ASV_tree)
+ASV_physeq_tree
+```
+
+Now we can run the **UniFrac** function and put its output into a tibble
+
+```{r}
+set.seed(777)
+
+Unix <- UniFrac(ASV_physeq_tree, weighted=TRUE, normalized=TRUE) %>%
+  as.matrix() %>%
+  as_tibble(rownames = "sample") %>%
+  as.data.frame(rownames=paste0("sample", 1:24)) %>%
+  column_to_rownames("sample")
+
+Unix
+```
+
+Now let's do the same thing but separate cDNA and gDNA
+
+```{r}
+# CREATE DATA FRAME
+bact_count_table_g <- bact_count_table %>% select(-contains("cDNA"))
+
+bact_count_table_c <- bact_count_table %>% select(-contains("gDNA"))
+```
+
+```{r}
+# first we need to create a gDNA-only phyloseq object using our un-transformed count table
+
+# count table containing only gDNA samples
+count_tab_phy_g <- otu_table(bact_count_table_g, taxa_are_rows=T)
+
+# create variable to select for only gDNA templates
+gDNA_wanted <- c("gDNA")
+
+# create metadata table containing only information about gDNA samples
+sample_info_table_bact_phy_g <- bact_sample_info_table %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% gDNA_wanted) %>%
+  as.data.frame(row.names = "sample")
+
+# taxa table will be the same for either template
+tax_tab_phy <- phyloseq::tax_table(bact_taxa_table)
+
+# now combine the counts, metadata, and taxa table into one phyloseq object
+ASV_physeq_gDNA <- phyloseq(count_tab_phy_g, tax_tab_phy, sample_info_table_bact_phy_g)
+```
+
+```{r}
+ASV_tree_gDNA = rtree(ntaxa(ASV_physeq_gDNA), rooted=TRUE, tip.label=taxa_names(ASV_physeq_gDNA))
+
+str(ASV_tree_gDNA) # contains edge, node, length, etc. 
+
+class(ASV_tree_gDNA) # "phylo"
+
+ASV_physeq_tree_gDNA = merge_phyloseq(ASV_physeq_gDNA, ASV_tree_gDNA)
+ASV_physeq_tree_gDNA
+```
+
+```{r}
+# run UniFrac on gDNA samples
+set.seed(777)
+
+Unix_gDNA <- 
+  UniFrac(ASV_physeq_tree_gDNA, weighted=TRUE, normalized=TRUE) %>%
+  as.matrix() %>%
+  as_tibble(rownames = "sample") %>%
+  as.data.frame(rownames=paste0("sample", 1:24)) %>%
+  column_to_rownames("sample")
+
+Unix_gDNA
+```
+
+now do the same for cDNA
+
+```{r}
+# first we need to create a cDNA-only phyloseq object using our un-transformed count table
+
+# count table containing only cDNA samples
+count_tab_phy_c <- phyloseq::otu_table(bact_count_table_c, taxa_are_rows=T)
+
+# create variable to select for only cDNA templates
+cDNA_wanted <- c("cDNA")
+
+# create metadata table containing only information about cDNA samples
+sample_info_table_bact_phy_c <- bact_sample_info_table %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% cDNA_wanted) 
+
+# taxa table will be the same for either template
+tax_tab_phy <- phyloseq::tax_table(bact_taxa_table)
+
+# now combine the counts, metadata, and taxa table into one phyloseq object
+ASV_physeq_cDNA <- phyloseq(count_tab_phy_c, tax_tab_phy, sample_info_table_bact_phy_c)
+```
+
+```{r}
+ASV_tree_cDNA = rtree(ntaxa(ASV_physeq_cDNA), rooted=TRUE, tip.label=taxa_names(ASV_physeq_cDNA))
+
+str(ASV_tree_cDNA) # contains edge, node, length, etc. 
+
+class(ASV_tree_cDNA) # "phylo"
+
+ASV_physeq_tree_cDNA = merge_phyloseq(ASV_physeq_cDNA, ASV_tree_cDNA)
+ASV_physeq_tree_cDNA
+```
+
+```{r}
+# run UniFrac on cDNA samples
+set.seed(777)
+
+Unix_cDNA <- 
+  UniFrac(ASV_physeq_tree_cDNA, weighted=TRUE, normalized=TRUE) %>%
+  as.matrix() %>%
+  as_tibble(rownames = "sample") %>%
+  as.data.frame(rownames=paste0("sample", 1:24)) %>%
+  column_to_rownames("sample")
+
+Unix_cDNA
+```
+
+# Mantel test
+
+source: <https://jkzorz.github.io/2019/07/08/mantel-test.html>
+
+Using the mantel test to compare ecological matrices using vegan
+
+Mantel test: used to compare different distance matrices.
+
+"Mantel tests are correlation tests that determine the correlation between two matrices (rather than two variables). When using the test for microbial ecology, the matrices are often distance/dissimilarity matrices with corresponding positions (i.e. samples in the same order in both matrices). In order to calculate the correlation, the matrix values of both matrices are 'unfolded' into long column vectors, which are then used to determine correlation. Permutations of one matrix are used to determine significance."
+
+"A significant Mantel test will tell you that the distances between samples in one matrix are correlated with the distances between samples in the other matrix. Therefore, as the distance between samples increases with respect to one matrix, the distances between the same samples also increases in the other matrix." (jkzorz.github.io)
+
+Examples of distances matrices that can be used:
+
+-   species abundance dissimilarity matrix: created using a distance measure (Bray-Curtis dissimilarity). This is the same type of dissimilarity matrix used when conducting and ANOSIM test or when making an NMDS plot
+
+-   Environmental parameter distance matrix: generally created using Euclidean Distance (ex: temperature differences between samples)
+
+-   Geographic distance matrix: the physical distance between sites (ex: Haversine distance)
+
+"With these matrix examples, you could determine if the differences in community composition between samples are correlated, or rather"co-vary", with the differences in temperature between samples, or the physical distance between samples. These tests can be used to address whether the environment is "selecting" for the microbial community, or if there is a strong distance decay pattern, suggesting dispersal limitation."
+
+Thoughts and goals for my analysis:
+
+In Du et al. 2015, the method used is described as "Mantel tests were conducted in QIIME to test the significance of correlations between weighted UniFrac distances of soil microbial communities and the normalized Euclidean distances in environmental factors and soil carbonaceous gas measurements." The two types of distance matrices they used for comparison were:
+
+-   weighted UniFract distances of soil microbial communities ("Unix")
+
+-   normalized Euclidean distances in environmental factors and soil gas measurements
+
+At this point in my analysis, I have the weighted UniFrac distances of my soil microbial communities, but I need to get normalized Euclidean distances of environmental factors and soil gas measurements.
+
+Possible resource:
+
+<https://stats.stackexchange.com/questions/54752/how-to-compute-a-measure-of-distance-between-sites-with-continuous-variables>
+
+<https://wiki.duke.edu/display/AnthroTree/11.1+Phylogenetic+community+ecology+in+R>
+
+## Running Mantel tests in R
+
+source: <https://jkzorz.github.io/2019/07/08/mantel-test.html>
+
+To perform a Mantel test in R. First load/install the required packages. The Mantel test function is part of the **vegan** package, which is also used for *anosim* tests and *nmds* plots.
+
+```{r}
+library(vegan)
+library(geosphere)
+library(picante)
+```
+
+If you are interested in using **physical distance** between samples as a matrix for the Mantel test. The package **geosphere** contains a function for calculating Haversine distances (distance between two points on a sphere) given latitude and longitude.
+
+Since we are running a statistical test, can only run this test on continuous variables, aka things that are numbers (soil temperature, flux, etc.) rather than variables that are categorical (riparian/upland, June/October, etc.). Categorical things can be used in ANOSIM/ADONIS/PERMANOVA-type tests.
+
+```{r}
+sample_numbers <- read.table("June_Oct_16S_MERGE_metadata - Copy.csv", header = T,  sep = ",")
+
+head(sample_numbers)
+```
+
+Let's generate **Faith's phylogenetic diversity values**
+
+```{r}
+# transpose data
+bact_count_table_t <- as.data.frame(t(bact_count_table))
+```
+
+picante assumes that the taxa in your phylogeny and the taxa in your dataset are in the SAME ORDER. This is easy to do:
+
+```{r}
+bact_count_table_t<-bact_count_table_t[,ASV_tree$tip.label]
+
+bact_count_tbl <- bact_count_table_t %>%
+  as_tibble(rownames="sample")
+```
+
+Phylogenetic diversity (Faith 1992): Phylogenetic diversity (PD) calculates the total branch length spanned by the species within a community. To calculate PD for our communities:
+
+```{r}
+bact.pd <- pd(bact_count_table_t, ASV_tree, include.root = TRUE)
+bact.pd
+
+bact.pd.tbl <- bact.pd %>%
+  as_tibble(rownames="sample")
+```
+
+Now let's combine into one large table
+
+```{r}
+ASV_proportions_tbl <- t(bact_count_table) %>% as_tibble(rownames = "sample")
+# load in ASV count table that has been merged with metadata
+df <- sample_numbers %>%
+  left_join(., bact.pd.tbl, by="sample") %>%
+  left_join(., ASV_proportions_tbl, by="sample") %>%
+  as.data.frame(rownames=paste0("sample", 1:24)) %>%
+  column_to_rownames("sample")
+```
+
+The first column is sample name, the next 10 columns contain environmental parameters for each sample (explained below). The remaining columns contain the thousand+ ASV abundances that correspond to each sample.
+
+-   month: the month in 2021 during which soil samples were collected
+
+-   soil: the type of soil, whether riparian (water-logged) or upland (dry), that each sample came from
+
+-   template: both gDNA or cDNA (from RNA) was generated from the samples and both nucleic acid templates were amplified for the 16S rRNA region and sequenced
+
+-   replicate: a column to pool technical replicates if needed
+
+-   flux: methane flux as determined by steady state chamber measurements. Units are ug CH4 -C\*h-1\*m-2
+
+-   latitude: latitude of soil sample collection
+
+-   longitude: longitude of soil sample collection
+
+-   soil.temp: soil temperature in degrees C at T0 during flux measurements
+
+-   PD: Faith's phylogenetic diversity value
+
+-   SR: species richness
+
+Now I need to subset my data into smaller data frames/vectors that contain just the information I need to generate the corresponding distance matrices. I will make these subsets: an abundance data frame, a vector with temperature info, and a data frame with the latitude and longitude of my samples. My ASV data starts at column 14.
+
+```{r}
+#abundance data frame
+abund = df[,14:ncol(df)]
+
+#environmental vectors
+temp = df$soil.temp
+
+flux = df$flux
+
+month = df$month
+
+soil = df$soil
+
+template = df$template
+
+replicate = df$replicate
+
+faith = df$PD
+
+rich = df$SR
+
+#longitude and latitude 
+geo = data.frame(df$longitude, df$latitude)
+```
+
+Now we have to convert these subsets into distance matrices.
+
+```{r}
+#abundance data frame - bray curtis dissimilarity, rarefied to lowest sampling depth
+dist.abund <- avgdist(abund, sample = 116838)
+
+#environmental vector - euclidean distance
+dist.temp = dist(temp, method = "euclidean")
+
+dist.flux = dist(flux, method = "euclidean")
+
+dist.faith = dist(faith, method = "euclidean")
+
+dist.rich = dist(rich, method = "euclidean")
+
+#geographic data frame - haversine distance 
+d.geo = distm(geo, fun = distHaversine)
+dist.geo = as.dist(d.geo)
+```
+
+Now we can run the ***mantel*** command.
+
+The mantel command requires the user to specify certain parameters:
+
+-   **distance matrices** (i.e. dist.abund and dist.temp)
+
+-   **correlation method**. I use Spearman to make the test "non-parametric". Learn more about correlation methods [**here**](https://jkzorz.github.io/2019/06/11/Correlation-heatmaps.html)
+
+    -   **Pearson correlation:** is the linear correlation between two variables.
+
+    -   **Spearman correlation:** is a non-parametric measure of rank correlation and assesses how well a relationship between two variables can be described using a monotonic function. A monotonic function is just a fancy way of describing a relationship where for each increasing x value, the y value also increases.
+
+        Spearman correlation is good when you're not overly concerned that your relationships fit a linear model, and Spearman captures all types of positive or negative relationships (i.e. exponential, logarithmic).
+
+-   **permutations**. Mantel tests determine significance by [permuting](https://mb3is.megx.net/gustame/hypothesis-tests/the-mantel-test) (randomizing) one matrix X number of times and observing the expected distribution of the statistic. I tend to pick a larger permutation number, but if computing power is low, feel free to decrease
+
+-   **na.rm**. An optional addition to the command that tells R to delete rows in which there are missing values.
+
+Interpreting Mantel test values:
+
+Mantel r values can fall within a range between -1 to 1. An r value of -1 suggests a strong negative correlation, 0 suggests no relationship at all and 1 suggests a strong positive relationship.
+
+```{r}
+#abundance vs soil temperature 
+mantel(dist.abund, dist.temp, method = "spearman", permutations = 9999, na.rm = TRUE) # Mantel statistic r: 0.3261 Significance: 5e-04 
+```
+
+From the results, I can see that the **soil** **temperature distance matrix has a slight positive relationship with the species Bray-Curtis dissimiliarity matrix** (**Mantel statistic R: 0.3255**, *p value = 3e-04*). In other words, as samples become more dissimilar in terms of temperature, they also become more dissimilar in terms of microbial community composition. Let's do this for the rest of our environmental parameters.
+
+```{r}
+mantel(dist.abund, dist.flux, method = "spearman", 
+       permutations = 9999, na.rm = TRUE) # R = 0.3416; p = 0.0014
+mantel(dist.abund, dist.faith, method = "spearman", 
+       permutations = 9999, na.rm = TRUE) # R = 0.3696 ; p = 2e-04
+mantel(dist.abund, dist.rich, method = "spearman", 
+       permutations = 9999, na.rm = TRUE) # Mantel statistic r: 0.3086;  Significance: 5e-04
+mantel(dist.abund, dist.geo, method = "spearman", 
+       permutations = 9999, na.rm = TRUE) # Mantel statistic r: 0.3157 Significance: 6e-04
+mantel(dist.flux, dist.faith, method = "spearman", 
+       permutations = 9999, na.rm = TRUE) # Mantel statistic r: 0.2504 Significance: 0.0054
+mantel(dist.flux, dist.rich, method = "spearman", 
+       permutations = 9999, na.rm = TRUE) # Mantel statistic r: 0.2424  Significance: 0.0064
+```
+
+## Mantel test with UniFrac distance matrix
+
+What is the difference between UniFrac and Bray-Curtis?
+
+```{r}
+mantel(Unix, dist.temp, method = "spearman", permutations = 9999, na.rm = TRUE) # 0.233  Significance: 0.0023
+
+mantel(Unix, dist.flux, method = "spearman", permutations = 9999, na.rm = TRUE) #0.3224 Significance: 0.0012 
+
+mantel(Unix, dist.faith, method = "spearman", permutations = 9999, na.rm = TRUE) #0.4475  Significance: 1e-04
+
+mantel(Unix, dist.rich, method = "spearman", permutations = 9999, na.rm = TRUE) # 0.376 Significance: 2e-04
+
+mantel(Unix, dist.geo, method = "spearman", permutations = 9999, na.rm = TRUE) #0.2014  Significance: 0.0063 
+```
+
+### gDNA: Bray-Curtis and UniFrac mantel tests
+
+```{r}
+# create a gDNA-only table
+gDNA_num <- c("gDNA")
+
+df_gDNA <- df %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% gDNA_num) %>%
+  as.data.frame(rownmaes=paste0("sample",1:12)) %>%
+  column_to_rownames("sample")
+```
+
+```{r}
+#abundance data frame
+abund_gDNA = df_gDNA[,14:ncol(df_gDNA)]
+
+#environmental vectors
+temp_g = df_gDNA$soil.temp
+
+flux_g = df_gDNA$flux
+
+faith_g = df_gDNA$PD
+
+rich_g = df_gDNA$SR
+
+#longitude and latitude 
+geo_g = data.frame(df_gDNA$longitude, df_gDNA$latitude)
+```
+
+```{r}
+#abundance data frame - bray curtis dissimilarity
+dist.abund.g <- avgdist(abund_gDNA, sample = 116838)
+
+#environmental vector - euclidean distance
+dist.temp.g = dist(temp_g, method = "euclidean")
+
+dist.flux.g = dist(flux_g, method = "euclidean")
+
+dist.faith.g = dist(faith_g, method = "euclidean")
+
+dist.rich.g = dist(rich_g, method = "euclidean")
+
+#geographic data frame - haversine distance 
+d.geo.g = distm(geo_g, fun = distHaversine)
+dist.geo.g = as.dist(d.geo.g)
+```
+
+```{r}
+# BRAY-CURTIS MANTEL TESTS
+mantel(dist.abund.g, dist.temp.g, method = "spearman", permutations = 9999, na.rm = TRUE) #Mantel  r: 0.8664 Significance: 2e-04 
+
+mantel(dist.abund.g, dist.flux.g, method = "spearman", permutations = 9999, na.rm = TRUE) #Mantel  r: 0.528 Significance: 0.001
+
+mantel(dist.abund.g, dist.faith.g, method = "spearman", permutations = 9999, na.rm = TRUE) #Mantel  r: 0.3219  Significance: 0.018  
+
+mantel(dist.abund.g, dist.rich.g, method = "spearman", permutations = 9999, na.rm = TRUE) # Mantel  r: 0.2944 Significance: 0.0234 
+
+mantel(dist.abund.g, dist.geo.g, method = "spearman", permutations = 9999, na.rm = TRUE) #Mantel  r: 0.8351 Significance: 2e-04
+```
+
+```{r}
+# UNIFRAC MANTEL TESTS
+mantel(Unix_gDNA, dist.temp.g, method = "spearman", permutations = 9999, na.rm = TRUE) # 0.5934 Significance: 8e-04
+
+mantel(Unix_gDNA, dist.flux.g, method = "spearman", permutations = 9999, na.rm = TRUE) #0.6207 Significance: 1e-04 
+
+mantel(Unix_gDNA, dist.faith.g, method = "spearman", permutations = 9999, na.rm = TRUE) # 0.3562 Significance: 0.0116
+
+mantel(Unix_gDNA, dist.rich.g, method = "spearman", permutations = 9999, na.rm = TRUE) # 0.3564 Significance: 0.0134
+
+mantel(Unix_gDNA, dist.geo.g, method = "spearman", permutations = 9999, na.rm = TRUE) # 0.5767  Significance: 0.0014
+```
+
+### cDNA: Bray-Curtis and UniFrac mantel tests
+
+```{r}
+# create a cDNA-only table
+cDNA_num <- c("cDNA")
+
+df_cDNA <- df %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% cDNA_num) %>%
+  as.data.frame(rownmaes=paste0("sample",1:12)) %>%
+  column_to_rownames("sample")
+```
+
+```{r}
+#abundance data frame
+abund_cDNA = df_cDNA[,14:ncol(df_cDNA)]
+
+#environmental vectors
+temp_c = df_cDNA$soil.temp
+
+flux_c = df_cDNA$flux
+
+faith_c = df_cDNA$PD
+
+rich_c = df_cDNA$SR
+
+#longitude and latitude 
+geo_c = data.frame(df_cDNA$longitude, df_cDNA$latitude)
+```
+
+```{r}
+#abundance data frame - bray curtis dissimilarity
+dist.abund.c <- avgdist(abund_cDNA, sample = 176264)
+#environmental vector - euclidean distance
+dist.temp.c = dist(temp_c, method = "euclidean")
+
+dist.flux.c = dist(flux_c, method = "euclidean")
+
+dist.faith.c = dist(faith_c, method = "euclidean")
+
+dist.rich.c = dist(rich_c, method = "euclidean")
+
+#geographic data frame - haversine distance 
+d.geo.c = distm(geo_c, fun = distHaversine)
+dist.geo.c = as.dist(d.geo.c)
+```
+
+```{r}
+# BRAY-CURTIS MANTEL TESTS
+mantel(dist.abund.c, dist.temp.c, method = "spearman", permutations = 9999, na.rm = TRUE) #Mantel  r: 0.1312  Significance: 0.1289
+
+mantel(dist.abund.c, dist.flux.c, method = "spearman", permutations = 9999, na.rm = TRUE) # Mantel  r: 0.277 Significance: 0.0372 
+
+mantel(dist.abund.c, dist.faith.c, method = "spearman", permutations = 9999, na.rm = TRUE) # Mantel  r: 0.4754 Significance: 0.0036 
+
+mantel(dist.abund.c, dist.rich.c, method = "spearman", permutations = 9999, na.rm = TRUE) # Mantel  r: 0.3649  Significance: 0.017 
+
+mantel(dist.abund.c, dist.geo.c, method = "spearman", permutations = 9999, na.rm = TRUE) # Mantel  r: 0.1432 Significance: 0.1183 
+```
+
+```{r}
+# UNIFRAC MANTEL TESTS
+mantel(Unix_cDNA, dist.temp.c, method = "spearman", permutations = 9999, na.rm = TRUE) # 0.09931  Significance: 0.1722  
+
+mantel(Unix_cDNA, dist.flux.c, method = "spearman", permutations = 9999, na.rm = TRUE) # 0.2561 Significance: 0.0365
+
+mantel(Unix_cDNA, dist.faith.c, method = "spearman", permutations = 9999, na.rm = TRUE)# 0.4073 Significance: 0.0076
+
+mantel(Unix_cDNA, dist.rich.c, method = "spearman", permutations = 9999, na.rm = TRUE)# 0.2949  Significance: 0.0327
+
+mantel(Unix_cDNA, dist.geo.c, method = "spearman", permutations = 9999, na.rm = TRUE)# 0.1557 Significance: 0.1008 
+```

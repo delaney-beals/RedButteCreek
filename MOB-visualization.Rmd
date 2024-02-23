@@ -1,0 +1,2037 @@
+---
+title: "RBC 16S analysis: MOB visualizations (genus level)"
+output: github_document
+---
+hello
+Written by Delaney Beals \| Date created: October 19, 2023 \| Date most recent edit: January 23, 2024
+
+# Relative abundance composition plot for genus-level proportions
+
+Resource: <https://astrobiomike.github.io/amplicon/dada2_workflow_ex>
+
+```{r message=FALSE, warning=FALSE}
+# load in libraries
+library(tidyverse) 
+library(phyloseq)
+library(vegan)
+library(DESeq2)
+library(dendextend)
+library(viridis)
+library(ggplot2)
+library(readr)
+library(gridExtra)
+library(cowplot)
+library(dplyr)
+library(forcats)
+library(patchwork)
+library(ggpubr)
+
+(.packages())
+```
+
+Making out phyloseq object
+
+```{r}
+# LOAD IN DATA
+bact_count_table <- read.table("June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+bact_taxa_table <- as.matrix(read.table("June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
+bact_sample_info_table <- read.table("June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",") 
+
+# first we need to create a phyloseq object using our un-transformed count table
+tax_mat <- as.matrix(bact_taxa_table)
+TAX <- phyloseq::tax_table(tax_mat)
+
+samples = sample_data(bact_sample_info_table)
+
+otu_mat <- as.matrix(bact_count_table)
+OTU = otu_table(otu_mat, taxa_are_rows = TRUE)
+ASV_physeq <- phyloseq(TAX, OTU, samples)
+```
+
+## Calculating relative abundance
+
+First make a table with proportions of reads. This will essentially be a normalization step in that we are calculating relative abundance of every ASV within each sample.
+
+```{r}
+# using phyloseq to make a count table that has summed all ASVs that were in the same genus
+
+gen_counts_tab <- otu_table(tax_glom(ASV_physeq, taxrank="Genus")) 
+
+# making a vector of genus names to set as row names
+
+genus_tax_vec <- as.vector(phyloseq::tax_table(tax_glom(ASV_physeq, taxrank="Genus"))[,6]) 
+
+rownames(gen_counts_tab) <- as.vector(genus_tax_vec)
+```
+
+We also have to account for sequences that weren't assigned any taxonomy even at the phylum level these came into R as 'NAs' in the taxonomy table, but their counts are still in the count table so we can get that value for each sample by subtracting the column sums of this new table (that has everything that had a phylum assigned to it) from the column sums of the starting count table (that has all representative sequences)
+
+```{r}
+unclassified_tax_counts_gen <- colSums(bact_count_table) - colSums(gen_counts_tab)
+
+# and we'll add this row to our phylum count table:
+
+gen_and_unidentified_counts_tab <- rbind(gen_counts_tab, "Unclassified"=unclassified_tax_counts_gen)
+
+# and to check we didn't miss any other sequences, we can compare the column sums to see if they are the same.If "TRUE", we know nothing fell through the cracks 
+
+identical(colSums(gen_and_unidentified_counts_tab), colSums(bact_count_table)) 
+```
+
+Now we'll generate a proportions table for summarizing:
+
+```{r}
+gen_taxa_proportions_tab <- apply(gen_and_unidentified_counts_tab, 2, function(x) x/sum(x)*100)
+
+#transform the table so that genera are in columns
+
+write.table(gen_taxa_proportions_tab, "proportions.tsv", sep = "\t", quote = F, col.names = NA)
+```
+
+### MOB/NMH subgroup
+
+Only keep genera of interest-- mostly methanotrophs, some methylotrophs and heterotrophs that have been reported to be associated with methanotrophs.
+
+```{r}
+# transpose table so that samples are in rows, genera are in columns
+gen_taxa_proportions_tab_df <- as.data.frame(t(gen_taxa_proportions_tab))
+
+# classify our genera into functional groups
+methanotrophs <- c("Methylosinus|Methylocystis|Methylocella|Methylocapsa|Methyloferula|Methylomonas|Methylobacter|Methylococcus|Methylomicrobium|Methylosphaera|Methylocaldum|Methylosarcina|Methylogaea|Methylosoma|Methylomarinum|Methylovulum|Methyloprofundus|Clonothrix|Methylothermus|Methylohalobius|Crenothrix|Methylacidiphilum")
+
+methylotrophs <- c("Methylophilus|Methylobacterium|Methyloversatilis|Methylotenera|Methylorubrum|Methyloceanibacter|Methyloligella|Methylopila|Hyphomicrobium|Paracoccus|Methylibium|Delftia|Methylovorus|Methylophaga|Methylobacillus|Flavobacterium|Acidovorax|Comamonas")
+
+meth_all <- c("Methylosinus|Methylocystis|Methylocella|Methylocapsa|Methyloferula|Methylomonas|Methylobacter|Methylococcus|Methylomicrobium|Methylosphaera|Methylocaldum|Methylosarcina|Methylogaea|Methylosoma|Methylomarinum|Methylovulum|Methyloprofundus|Clonothrix|Methylothermus|Methylohalobius|Crenothrix|Methylacidiphilum|Methylophilus|Methylobacterium|Methyloversatilis|Methylotenera|Methylorubrum|Methyloceanibacter|Methyloligella|Methylopila|Methylibium|Methylovorus|Methylophaga|Methylobacillus|Flavobacterium|Acidovorax|Comamonas")
+
+# create new tables containing only the genera groups we want
+methanotrophs_prop <- gen_taxa_proportions_tab_df %>% select(matches(methanotrophs)) %>% select(-Methylobacterium)
+methylotrophs_prop <- gen_taxa_proportions_tab_df %>% select(matches(methylotrophs))
+meth_all_prop <- gen_taxa_proportions_tab_df %>% select(matches(meth_all))
+
+# transpose table again so that rows are genera and columns are samples
+methanotrophs_prop1 <- as.data.frame(t(methanotrophs_prop))
+methylotrophs_prop1 <- as.data.frame(t(methylotrophs_prop))
+meth_all_prop1 <- as.data.frame(t(meth_all_prop))
+
+# make sure we are in a data frame
+methanotrophs_prop_tab <- methanotrophs_prop1 %>%
+  as_tibble(rownames= "Genera") %>% 
+  as.data.frame(rownames=paste0("Genera", 1:24)) 
+
+methylotrophs_prop_tab <- methylotrophs_prop1 %>%
+  as_tibble(rownames= "Genera") %>% 
+  as.data.frame(rownames=paste0("Genera", 1:24))
+
+meth_all_prop_tab <- meth_all_prop1 %>%
+  as_tibble(rownames= "Genera") %>% 
+  as.data.frame(rownames=paste0("Genera", 1:24))
+```
+
+methanotrophs \<- c("Methylosinus\|Methylocystis\|Methylocella\|Methylocapsa\|Methyloferula\|Methylomonas\|Methylobacter\|Methylococcus\|Methylomicrobium\|Methylosphaera\|Methylocaldum\|Methylosarcina\|Methylogaea\|Methylosoma\|Methylomarinum\|Methylovulum\|Methyloprofundus\|Clonothrix\|Methylothermus\|Methylohalobius\|Crenothrix\|Methylacidiphilum")
+
+methylotrophs \<- c("Methylophilus\|Methylobacterium\|Methyloversatilis\|Methylotenera\|Methylorubrum\|Methyloceanibacter\|Methyloligella\|Methylopila\|Hyphomicrobium\|Paracoccus\|Methylibium\|Delftia\|Methylovorus\|Methylophaga\|Methylobacillus")
+
+meth_all \<- c("Methylosinus\|Methylocystis\|Methylocella\|Methylocapsa\|Methyloferula\|Methylomonas\|Methylobacter\|Methylococcus\|Methylomicrobium\|Methylosphaera\|Methylocaldum\|Methylosarcina\|Methylogaea\|Methylosoma\|Methylomarinum\|Methylovulum\|Methyloprofundus\|Clonothrix\|Methylothermus\|Methylohalobius\|Crenothrix\|Methylacidiphilum\|Methylophilus\|Methylobacterium\|Methyloversatilis\|Methylotenera\|Methylorubrum\|Methyloceanibacter\|Methyloligella\|Methylopila\|Hyphomicrobium\|Paracoccus\|Methylibium\|Delftia\|Methylovorus\|Methylophaga\|Methylobacillus")
+
+Change the wide format "proportion" into long format, which makes plotting with ggplot2 easier. We want three long columns, with names "Genera", "Sample", and "Proportion" with the corresponding values.
+
+```{r}
+MOB_prop <- pivot_longer(methanotrophs_prop_tab, !Genera, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+NMM_prop <- pivot_longer(methylotrophs_prop_tab, !Genera, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+prop <- pivot_longer(meth_all_prop_tab, !Genera, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+```
+
+Now we can start doing some plotting; this might not look great but we just want to make sure everything is generally in the place we want.
+
+```{r}
+# set the ggplot2 theme
+my_theme <- theme_bw() +
+        theme(text=element_text(size = 12), 
+        axis.text.x=element_text(size=10, color = "black"), 
+        axis.text.y = element_text(size=10, color = "black"),
+        title = element_text(size = 10, color = "black"), 
+        legend.title=element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank()
+        )
+```
+
+```{r}
+ggplot(prop, aes(x = Sample, y = Genera, size = Proportion)) + 
+  geom_point(alpha = 0.7) +
+  my_theme
+```
+
+order: "Methylosinus","Methylomonas", "Methylomicrobium", "Methyloferula", "Methylobacter", "Methyloversatilis", "Methylotenera", "Methylophilus", "Janthinobacterium", "Flavobacterium"
+
+```{r}
+ggplot(prop, aes(x = Sample, y = Proportion)) + 
+  geom_bar(stat = "identity") +  theme(legend.key=element_blank(), 
+        axis.text.x = element_text(colour = "black", size = 12,
+                                   face = "bold", angle = 90, 
+                                   vjust = 0.3, hjust = 1))
+```
+
+Looks good. To break this up, I want to load in the metadata so that we can change the colors depending on different characteristics of each sample.
+
+```{r}
+# read in metadata CSV
+bact_sample_info_table <- read.table("June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",")
+
+# Adding information from our metadata to group/color our bubble plot based on different characteristics of our samples
+sample_info_for_merge <- data.frame(
+  "Sample" = row.names(bact_sample_info_table),
+  "soil" = bact_sample_info_table$soil,
+  "replicate"= bact_sample_info_table$replicate,
+  "template" = bact_sample_info_table$template,
+  "soil.temp" = bact_sample_info_table$soil.temp,
+  "month" = bact_sample_info_table$month,
+  "monthsoil" = bact_sample_info_table$monthsoil,
+  "full_name" = bact_sample_info_table$full_name,
+  stringsAsFactors=F)
+
+# merging this table with the table containing our proportions
+prop_info <- merge(prop, sample_info_for_merge) 
+MOB_prop_info <- merge(MOB_prop, sample_info_for_merge) 
+NMM_prop_info <- merge(NMM_prop, sample_info_for_merge) 
+```
+
+```{r}
+# reordering the labels
+new_prop_info <- prop_info %>%
+  mutate(Genera = fct_relevel(Genera, "Flavobacterium","Comamonas","Acidovorax", "Methyloversatilis","Methylotenera","Methylorubrum" ,"Methylopila", "Methylophilus","Methyloligella","Methyloceanibacter", "Methylobacterium", "Methylibium","Methylosinus" ,"Methylomicrobium","Methyloferula", "Methylomonas", "Methylobacter"))
+
+
+# overall plot
+ggplot(new_prop_info, aes(Proportion, Genera)) +
+  geom_jitter(aes(color=factor(monthsoil), shape=factor(template)), 
+              size=2.5, width=0.15, height=0) +
+  scale_x_continuous(breaks = c(0,1,2,3,4,5,6)) +
+  my_theme 
+
+# zooming into smaller percentages
+ggplot(new_prop_info, aes(Proportion, Genera)) +
+  geom_jitter(aes(color=factor(monthsoil), shape=factor(template)), 
+              size=2.5, width=0.15, height=0) +
+  xlim(0, 0.5)+
+  my_theme 
+```
+
+```{r}
+col_fill = c("black", "black", "black", "black", "black", "black", "black", "black", "black", "black", "black", "black", "red", "red", "red", "red", "red")
+
+# try to combine the two above plots 
+overall_plott <- ggplot(new_prop_info, aes(Proportion, Genera)) +
+  geom_jitter(aes(color=factor(monthsoil), shape=factor(template)), 
+              size=2.5, width=0.15, height=0) +
+  scale_x_continuous(breaks = c(1,2,3,4,5,6,7), limits = c(1,7)) +
+  my_theme +
+  theme(legend.key = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(), 
+        plot.margin = unit(c(5.5, 5.5, 5.5, -1), "pt")) 
+
+
+zoom_plot <- ggplot(new_prop_info, aes(Proportion, Genera)) +
+  geom_jitter(aes(color=factor(monthsoil), shape=factor(template)), 
+              size=2.5, width=0.15, height=0) +
+    xlim(0,0.5) +
+    my_theme +
+  theme(legend.position = "none", 
+        axis.text.y = element_text(color=col_fill, face = "italic"))
+        
+plot_grid(zoom_plot, overall_plott, nrow = 1, rel_widths = c(1,1))
+```
+
+
+## Bubble plot: MOB/NMH relative abundance
+
+```{r}
+# Bubble plot with replicates of the same sample having the same color
+colours = c("#b2182b", "#2166ac","#ff8c00", "#bb4500", "#bf3eff","#caff70","#6e8b3d","#00ffff")
+
+ggplot(prop_info, aes(x = Sample, y = Genera)) + 
+  geom_point(aes(size = Proportion, fill = replicate), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00001, 10), range = c(1,10),
+                        breaks = c(0.1, 1, 10)) + 
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
+  theme(legend.key=element_blank(), 
+        axis.text.x = element_text(colour = "black", size = 12, 
+                                   face = "bold", angle = 90, 
+                                   vjust = 0.3, hjust = 1),
+        axis.text.y = element_text(colour = "black", face = "bold",
+                                   size = 11), 
+        legend.text = element_text(size = 10, face ="bold", 
+                                   colour ="black"), 
+        legend.title = element_text(size = 12, face = "bold"), 
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, 
+                                    linewidth   = 1.2), 
+        legend.position = "right") +  
+  scale_fill_manual(values = colours, guide = "none") +
+  scale_y_discrete(limits = rev(levels(prop_info$Genera)))
+```
+
+We can also break up the gDNA and cDNA samples.
+
+```{r}
+# Create variables containing either template
+gDNA_wanted <- c("gDNA")
+cDNA_wanted <- c("cDNA")
+
+# create two versions of our proportion table with either gDNA or cDNA only
+prop_info_gDNA <-prop_info %>% filter(template %in% gDNA_wanted)
+prop_info_cDNA <-prop_info %>% filter(template %in% cDNA_wanted)
+```
+
+Now we will make a bubble plot of each, then put them side by side
+
+```{r}
+# Bubble plot with replicates of the same sample having the same color
+colours = c("#e41a1c", "#377eb8","#4daf4a", "#984ea3")
+
+ggplot(prop_info_gDNA, aes(x = Sample, y = Genera)) + 
+  geom_point(aes(size = Proportion, fill = replicate), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00001, 10), range = c(1,10),
+                        breaks = c(0.1, 1, 10)) + 
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
+  theme(legend.key=element_blank(), 
+        axis.text.x = element_text(colour = "black", size = 12, 
+                                   face = "bold", angle = 90, 
+                                   vjust = 0.3, hjust = 1),
+        axis.text.y = element_text(colour = "black", face = "bold",
+                                   size = 11), 
+        legend.text = element_text(size = 10, face ="bold", 
+                                   colour ="black"), 
+        legend.title = element_text(size = 12, face = "bold"), 
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, 
+                                    size = 1.2), 
+        legend.position = "right") +  
+  scale_fill_manual(values = colours, guide = FALSE) +
+  scale_y_discrete(limits = rev(levels(prop_info$Genera)))
+```
+
+```{r}
+# Bubble plot with replicates of the same sample having the same color
+colours = c("#e41a1c", "#377eb8","#4daf4a", "#984ea3")
+
+ggplot(prop_info_cDNA, aes(x = Sample, y = Genera)) + 
+  geom_point(aes(size = Proportion, fill = replicate), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00001, 10), range = c(1,10),
+                        breaks = c(0.1, 1, 10)) + 
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
+  theme(legend.key=element_blank(), 
+        axis.text.x = element_text(colour = "black", size = 12, 
+                                   face = "bold", angle = 90, 
+                                   vjust = 0.3, hjust = 1),
+        axis.text.y = element_text(colour = "black", face = "bold",
+                                   size = 11), 
+        legend.text = element_text(size = 10, face ="bold", 
+                                   colour ="black"), 
+        legend.title = element_text(size = 12, face = "bold"), 
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, 
+                                    size = 1.2), 
+        legend.position = "right") +  
+  scale_fill_manual(values = colours, guide = FALSE) +
+  scale_y_discrete(limits = rev(levels(prop_info$Genera)))
+```
+
+Looks good. Now we want to put them side by side but get rid of the labels and legends that will be redundant once in the grid.
+
+```{r}
+# change legend.position = "none" to remove legend, change margin sizes
+gDNA_plot <- 
+  ggplot(prop_info_gDNA, aes(x = Sample, y = Genera)) + 
+  geom_point(aes(size = Proportion, fill = replicate), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00001, 10), range = c(1,10),
+                        breaks = c(0.1, 1, 10)) + 
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
+  theme(legend.key=element_blank(), 
+        axis.text.x = element_text(colour = "black", size = 12, 
+                                   face = "bold", angle = 90, 
+                                   vjust = 0.3, hjust = 1),
+        axis.text.y = element_text(colour = "black", face = "bold",
+                                   size = 11), 
+        legend.text = element_text(size = 10, face ="bold", 
+                                   colour ="black"), 
+        legend.title = element_text(size = 12, face = "bold"), 
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, 
+                                    size = 1.2), 
+        legend.position = "none", 
+        plot.margin = unit(c(5.5, 1.5, 5.5, 5.5), "pt")) +  
+  scale_fill_manual(values = colours, guide = FALSE) +
+  scale_y_discrete(limits = rev(levels(prop_info$Genera)))
+
+gDNA_plot
+```
+
+```{r}
+# change margins, remove Y axis labels
+cDNA_plot <- 
+  ggplot(prop_info_cDNA, aes(x = Sample, y = Genera)) + 
+  geom_point(aes(size = Proportion, fill = replicate), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00001, 10), range = c(1,10),
+                        breaks = c(0.1, 1, 10)) + 
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
+  theme(legend.key=element_blank(), 
+        axis.text.x = element_text(colour = "black", size = 12, 
+                                   face = "bold", angle = 90, 
+                                   vjust = 0.3, hjust = 1),
+        axis.text.y = element_blank(), 
+        legend.text = element_text(size = 10, face ="bold", 
+                                   colour ="black"), 
+        legend.title = element_text(size = 12, face = "bold"), 
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, 
+                                    size = 1.2), 
+        legend.position = "right", 
+        plot.margin = unit(c(5.5, 5.5, 5.5, -10), "pt")) +  
+  scale_fill_manual(values = colours, guide = FALSE) +
+  scale_y_discrete(limits = rev(levels(prop_info$Genera)))
+
+cDNA_plot
+```
+
+```{r}
+# make grid with new plots
+grid.arrange(gDNA_plot, cDNA_plot, nrow = 1)
+```
+
+Additional interesting way to break up the data, will definitely require cleaning up. Resource: <http://www.sthda.com/english/wiki/ggplot2-facet-split-a-plot-into-a-matrix-of-panels>
+
+```{r}
+# reordering the labels
+new <- prop_info %>%
+  mutate(Genera = fct_relevel(Genera,"Flavobacterium","Comamonas","Acidovorax", "Methyloversatilis","Methylotenera","Methylorubrum" ,"Methylopila", "Methylophilus","Methyloligella","Methyloceanibacter", "Methylobacterium", "Methylibium","Methylosinus" ,"Methylomicrobium","Methyloferula", "Methylomonas", "Methylobacter"))
+
+new = new[,]
+
+colours = c("#0073e6","#5ba300")
+
+ggplot(new, aes(x = Sample, y = Genera)) + 
+  geom_point(aes(size = Proportion, fill = soil), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00000001, 10), range = c(1,10),
+                        breaks = c(0.1, 1, 10)) +
+  facet_grid(template ~ month, margin = TRUE) +
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
+  scale_fill_manual(values = colours) +
+  theme_bw() +
+  theme(text=element_text(size = 12), 
+        axis.text.x=element_text(angle = -90, hjust = 0, vjust = 0, size=10, color = "black"), 
+        axis.text.y = element_text(size=10, color = "black"),
+        title = element_text(size = 10, color = "black"), 
+        legend.title=element_blank(),
+        panel.grid.minor = element_blank())
+```
+
+```{r}
+# methanotrophs only
+colours = c("#0073e6","#5ba300")
+
+ggplot(MOB_prop_info, aes(x = Sample, y = Genera)) + 
+  geom_point(aes(size = Proportion, fill = soil), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00000001, 10), range = c(1,10),
+                        breaks = c(0.1, 1, 10)) +
+  facet_grid(template ~ month, margin = TRUE) +
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
+  scale_fill_manual(values = colours) +
+  theme_bw() +
+  theme(text=element_text(size = 12), 
+        axis.text.x=element_text(angle = -90, hjust = 0, vjust = 0, size=10, color = "black"), 
+        axis.text.y = element_text(size=10, color = "black"),
+        title = element_text(size = 10, color = "black"), 
+        legend.title=element_blank(),
+        panel.grid.minor = element_blank())
+```
+
+```{r}
+# methylotrophs only
+colours = c("#0073e6","#5ba300")
+
+ggplot(NMM_prop_info, aes(x = Sample, y = Genera)) + 
+  geom_point(aes(size = Proportion, fill = soil), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00000001, 10), range = c(1,10),
+                        breaks = c(0.1, 1, 10)) +
+  facet_grid(template ~ month, margin = TRUE) +
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
+  scale_fill_manual(values = colours) +
+  theme_bw() +
+  theme(text=element_text(size = 12), 
+        axis.text.x=element_text(angle = -90, hjust = 0, vjust = 0, size=10, color = "black"), 
+        axis.text.y = element_text(size=10, color = "black"),
+        title = element_text(size = 10, color = "black"), 
+        legend.title=element_blank(),
+        panel.grid.minor = element_blank())
+```
+
+Reworking to make a differnt looking grid
+
+```{r}
+# Create variables containing either template
+gDNA_wanted <- c("gDNA")
+cDNA_wanted <- c("cDNA")
+
+# create two versions of our proportion table with either gDNA or cDNA only
+new_gDNA <- new %>% filter(template %in% gDNA_wanted)
+new_cDNA <-new %>% filter(template %in% cDNA_wanted)
+
+# set colors and faces
+face_fill = c( "italic", "italic", "italic", "italic", "italic", "italic", "italic", "italic", "italic","italic", "italic", "italic", "bold.italic", "bold.italic", "bold.italic", "bold.italic", "bold.italic")
+
+colours = c("#0073e6","red")
+
+# gDNA plot
+gDNA_plot <- 
+  ggplot(new_gDNA, aes(x = full_name, y = Genera)) + 
+  geom_point(aes(size = Proportion, fill = soil), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00000001, 10), range = c(1,10),
+                        breaks = c(0.1, 1, 10)) + 
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "", title= "gDNA") + 
+  theme(legend.key=element_blank(), 
+        axis.text.x = element_text(colour = "black", size = 12, 
+                                   angle = 90, 
+                                   vjust = 0.3, hjust = 1),
+        axis.text.y = element_text(colour = "black", 
+                                   face = face_fill, size = 11), 
+        legend.text = element_text(size = 10, face ="bold", 
+                                   colour ="black"), 
+        legend.title = element_text(size = 12, face = "bold"), 
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "gray", fill = NA, 
+                                    linewidth = 1), 
+        legend.position = "none", 
+        plot.margin = unit(c(5.5, 1.5, 5.5, 5.5), "pt")) +  
+  scale_fill_manual(values = colours, guide = "none") +
+  scale_y_discrete(limits = rev(levels(prop_info$Genera))) 
+
+# change margins, remove Y axis labels
+cDNA_plot <- 
+  ggplot(new_cDNA, aes(x = full_name, y = Genera)) + 
+  geom_point(aes(size = Proportion, fill = soil), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00000001, 10), range = c(1,10),
+                        breaks = c(0.1, 1, 10)) + 
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "", title = "cDNA" ) + 
+  theme(legend.key= element_blank(), 
+        axis.text.x = element_text(colour = "black", size = 12, 
+                                   angle = 90, 
+                                   vjust = 0.3, hjust = 1),
+        axis.text.y = element_blank(), 
+        legend.text = element_text(size = 10, 
+                                   colour ="black"), 
+        legend.title = element_text(size = 12), 
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "gray", fill = NA, 
+                                    linewidth = 1), 
+        legend.position = "right", 
+        plot.margin = unit(c(5.5, 5.5, 5.5, -10), "pt")) +  
+  scale_fill_manual(values = colours, guide = "none") +
+  scale_y_discrete(limits = rev(levels(prop_info$Genera))) 
+
+legend2 <- get_legend(cDNA_plot)
+
+
+# make grid with new plots
+plot_grid(gDNA_plot, cDNA_plot + theme(legend.position = "none"), legend2, nrow = 1, ncol= 3,  rel_widths =  c(1, 0.6, 0.6))
+```
+
+
+# Alpha diversity
+
+"Alpha diversity refers to the diversity of a local community (i.e. a single site or sample). The simplest form of alpha diversity is species richness which is the number of species observed in the local community. However, there are many different metrics which can be used to quantify alpha diversity in community ecology, that can broadly be broken down into three categories: measures of species richness, measures of species evenness, and overall diversity metrics considering both richness and evenness."
+
+### Calculate alpha diversity
+
+```{r}
+
+meth_all_prop_tab <- read.table("meth_all_prop.csv", header = T, row.names = 1, sep = ",") 
+
+# Shannon's H' 
+H.mob <- diversity(t(meth_all_prop_tab))
+
+# Observed Richness 
+richness.mob <- specnumber(t(meth_all_prop_tab))  
+
+# Pieulou's Evenness 
+evenness.mob <- H.mob/log(richness.mob)  
+
+# relative abundance of methanotrophs
+abund.mob <- colSums(meth_all_prop_tab)
+
+# Create alpha diversity dataframe including environmental data 
+alpha.mob.values <- cbind(shannon = H.mob, richness = richness.mob, pielou = evenness.mob, abund = abund.mob)
+
+alpha.mob.tbl <- alpha.mob.values %>%
+  as_tibble(rownames = "sample")
+
+
+alpha.mob <- cbind(bact_sample_info_table,alpha.mob.tbl[,-1])
+```
+
+### Plot alpha diversity
+
+```{r}
+plot.shan.MOB <- ggplot(alpha.mob, aes(x = replicate, y = shannon, colour = replicate)) +   
+  geom_point(size = 3) +   
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +   
+  ylab("Shannon's H'") +    
+  xlab("") +   
+  theme_bw() +   
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))  
+
+plot.rich.MOB <- ggplot(alpha.mob, aes(x = replicate, y = richness, colour = replicate)) +   
+  geom_point(size = 3) +   
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +   
+  ylab("Species Richness") +   
+  xlab("") +   
+  theme_bw() +   
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))  
+
+plot.even.MOB <- ggplot(alpha.mob, aes(x = replicate, y = pielou, colour = replicate)) +   
+  geom_point(size = 3) +   
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +   
+  ylab("Pielou's Evenness") +  
+  xlab("") +   
+  theme_bw() +   
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))  
+
+plot.abund.MOB <- ggplot(alpha.mob, aes(x = replicate, y = abund, colour = replicate)) +   
+  geom_point(size = 3) +   
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +   
+  ylab("MOB % abundance") +  
+  xlab("") +   
+  theme_bw() +   
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))  
+
+legend <- get_legend(plot.even.MOB)  
+
+plot_grid(plot.shan.MOB + theme(legend.position = "none"), 
+          plot.rich.MOB + theme(legend.position = "none"), 
+          plot.even.MOB + theme(legend.position = "none"),
+          plot.abund.MOB + theme(legend.position = "none"),
+          ncol = 4)
+```
+
+These graphs illustrate the differences between alpha diversity metrics and the relationship between species richness, Pielou's evenness, and Shannon's H'. Let's look at two examples: June-rip-gDNA and Oct-rip-gDNA. These two samples have similar Shannon H' scores, however, this is a result of distinct mechanisms. June-rip-gDNA has a large number of ASVs (high species richness) but is relatively uneven (moderate Pielou's Evenness), resulting in a moderate Shannon H'. Oct-rip-gDNA, in contrast, has a small number of ASVs (low species richness) but is very even (high Pielou's evenness), also resulting in a moderate Shannon H'. Alpha diversity is structured very differently in June-rip-gDNA compared to Oct-rip-gDNA, but if we had used Shannon H' alone we may not have identified these differences.
+
+```{r}
+ggplot(alpha.mob, aes(x = flux, y = abund, colour = replicate)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("CH4 flux") + 
+  ylab("MOB relative abundance (%)") +
+  theme_bw()
+
+```
+
+```{r}
+ggscatter(alpha.mob, x = "flux", y = "abund", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson")
+
+cor.test(alpha.mob$flux, alpha.mob$abund, 
+                    method = "pearson") # -0.1198678 ; p-value = 0.5769
+```
+
+```{r}
+# gDNA only 
+gDNA_wanted <- c("gDNA")
+
+alpha.mob2.gDNA <- alpha.mob %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% gDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+soil.shannon.g <- ggplot(alpha.mob2.gDNA, aes(x = soil, y = shannon, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil type") + 
+  ylab("Shannon H' of MOB community") +
+  theme_bw()
+
+month.shannon.g <- ggplot(alpha.mob2.gDNA, aes(x = month, y = shannon, colour = replicate)) + 
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Month") +
+  ylab("") +
+  theme_bw()
+
+flux.shannon.g <- ggplot(alpha.mob2.gDNA, aes(x = flux, y = shannon, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("CH4 flux") +
+  ylab("") +
+  theme_bw()
+
+temp.shannon.g <- ggplot(alpha.mob2.gDNA, aes(x = soil.temp, y = shannon, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil temperature") + 
+  ylab("") +
+  my_theme
+
+legend <- get_legend(temp.shannon.g)
+
+plot_grid(soil.shannon.g + theme(legend.position = 'none'),
+          month.shannon.g + theme(legend.position = 'none'),
+          flux.shannon.g + theme(legend.position = 'none'),
+          temp.shannon.g + theme(legend.position = 'none'),
+          legend, ncol = 5)
+```
+
+```{r}
+summary(lm(shannon ~ flux, alpha.mob2.gDNA))
+summary(lm(shannon ~ soil.temp, alpha.mob2.gDNA))
+
+cor.test(alpha.mob2.gDNA$shannon, alpha.mob2.gDNA$flux, 
+                    method = "pearson") # R = 0.6138457;  p-value = 0.03374
+```
+
+```{r}
+ggplot(alpha.mob2.gDNA, aes(x = soil.temp, y = flux, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil temperature") + 
+  ylab("CH4 flux") +
+  theme_bw()
+
+summary(lm(flux ~ soil.temp, alpha.mob2.gDNA))
+
+ggplot(alpha.mob2.gDNA, aes(x = longitude, y = soil.temp, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil type") + 
+  ylab("Soil temperature") +
+  theme_bw()
+
+
+summary(lm(longitude ~ soil.temp, alpha.mob2.gDNA))
+
+summary(aov(longitude ~ soil.temp, alpha.mob2.gDNA))
+
+
+ggplot(alpha.mob2.gDNA, aes(x = longitude, y = flux, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil type") + 
+  ylab("CH4 flux") +
+  theme_bw()
+
+summary(lm(longitude ~ flux, alpha.mob2.gDNA))
+```
+
+```{r}
+ggplot(alpha.mob2.gDNA, aes(x = flux, y = richness, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  theme_bw()
+
+summary(lm(flux ~ richness, alpha.mob2.gDNA))
+```
+
+```{r}
+# cDNA only 
+cDNA_wanted <- c("cDNA")
+
+alpha.mob2.cDNA <- alpha.mob %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% cDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+soil.shannon.c <- ggplot(alpha.mob2.cDNA, aes(x = soil, y = shannon, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil type") + 
+  ylab("Shannon H' of MOB community") +
+  theme_bw()
+
+month.shannon.c <- ggplot(alpha.mob2.cDNA, aes(x = month, y = shannon, colour = replicate)) + 
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Month") +
+  ylab("") +
+  theme_bw()
+
+flux.shannon.c <- ggplot(alpha.mob2.cDNA, aes(x = flux, y = shannon, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("CH4 flux") +
+  ylab("") +
+  theme_bw()
+
+temp.shannon.c <- ggplot(alpha.mob2.cDNA, aes(x = soil.temp, y = shannon, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil temperature") + 
+  ylab("") +
+  theme_bw()
+
+legend <- get_legend(temp.shannon.c)
+
+plot_grid(soil.shannon.c + theme(legend.position = 'none'),
+          month.shannon.c + theme(legend.position = 'none'),
+          flux.shannon.c + theme(legend.position = 'none'),
+          temp.shannon.c + theme(legend.position = 'none'),
+          legend, ncol = 5)
+
+```
+
+```{r}
+summary(lm(shannon ~ soil.temp, alpha.mob2.cDNA))
+```
+
+```{r}
+ggplot(alpha.mob2.cDNA, aes(x = soil.temp, y = flux, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  theme_bw()
+
+summary(lm(soil.temp ~ flux, alpha.mob2.cDNA))
+```
+
+Instead of Shannon, what if we looked at phylogenetic diversity
+
+```{r}
+# load in table containing phylogenetic diversity info
+bact.pd <- read.csv("bact_pd_tbl.csv", header = TRUE)
+
+
+MOB.props <- as.data.frame(t(meth_all_prop_tab))
+MOB.props.tbl <- MOB.props %>%
+  as_tibble(rownames = "sample")
+
+
+sample_lookup <- read.csv("June_Oct_16S_MERGE_metadata - Copy.csv", header = TRUE)
+# load in ASV count table that has been merged with metadata
+PD_SR <- sample_lookup %>%
+  left_join(., bact.pd, by="sample") %>%
+  left_join(., MOB.props.tbl, by="sample") %>%
+  as.data.frame(rownames=paste0("sample", 1:24)) %>%
+  column_to_rownames("sample")
+```
+
+```{r}
+ggplot(PD_SR, aes(x = replicate, y = PD, colour = month)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  ylab("Phylogenetic diversity") + 
+   theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))
+
+ggplot(PD_SR, aes(x = flux, y = PD, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  ylab("Phylogenetic diversity") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))
+```
+
+```{r}
+summary(lm(PD ~ longitude, PD_SR))
+summary(lm(PD ~ flux, PD_SR))
+summary(lm(PD ~ soil.temp, PD_SR))
+```
+
+```{r}
+soil.PD <- ggplot(PD_SR, aes(x = soil, y = PD, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil type") + 
+  ylab("Phylogenetic diversity") +
+  theme_bw()
+
+month.PD <- ggplot(PD_SR, aes(x = month, y = PD, colour = replicate)) + geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Month") +
+  ylab("") +
+  theme_bw()
+
+long.PD <- ggplot(PD_SR, aes(x = longitude, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Longitude (soil type)") +
+  ylab("") +
+  theme_bw()
+
+flux.PD <- ggplot(PD_SR, aes(x = flux, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("CH4 flux") +
+  ylab("") +
+  theme_bw()
+
+temp.PD <- ggplot(PD_SR, aes(x = soil.temp, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil temperature") + 
+  ylab("") +
+  theme_bw()
+
+legend <- get_legend(temp.PD)
+
+plot_grid(soil.PD + theme(legend.position = 'none'),
+          month.PD + theme(legend.position = 'none'),
+          long.PD + theme(legend.position = 'none'),
+          flux.PD + theme(legend.position = 'none'),
+          temp.PD + theme(legend.position = 'none'),
+          legend, ncol = 6)
+```
+
+```{r}
+gDNA_wanted <- c("gDNA")
+
+PD_SR_gDNA <- PD_SR %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% gDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+cDNA_wanted <- c("cDNA")
+
+PD_SR_cDNA <- PD_SR %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% cDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+```
+
+```{r}
+ggplot(PD_SR, aes(x = replicate, y = SR, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("") + 
+  ylab("Species Richness") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10, angle = 90, vjust = 0.3, hjust = 1))
+
+SR.g <- ggplot(PD_SR_gDNA, aes(x = replicate, y = SR, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("") + 
+  ylab("Species Richness") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10, angle = 90, vjust = 0.3, hjust = 1))
+
+SR.c <- ggplot(PD_SR_cDNA, aes(x = replicate, y = SR, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("") + 
+  ylab("") +
+  theme_bw()+
+  theme(axis.text.x = element_text(size = 10, angle = 90, vjust = 0.3, hjust = 1))
+
+legend <- get_legend(SR.c)
+
+plot_grid(SR.g + theme(legend.position = 'none'),
+          SR.c + theme(legend.position = 'none'),
+          legend, ncol = 3)
+```
+
+```{r}
+summary(lm(PD ~ longitude, PD_SR_gDNA))
+summary(lm(PD ~ flux, PD_SR_gDNA))
+summary(lm(PD ~ soil.temp, PD_SR_gDNA))
+```
+
+```{r}
+soil.PD.g <- ggplot(PD_SR_gDNA, aes(x = soil, y = PD, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil type") + 
+  ylab("Phylogenetic diversity") +
+  theme_bw()
+
+month.PD.g <- ggplot(PD_SR_gDNA, aes(x = month, y = PD, colour = replicate)) + geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Month") +
+  ylab("") +
+  theme_bw()
+
+long.PD.g <- ggplot(PD_SR_gDNA, aes(x = longitude, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Longitude (soil type)") +
+  ylab("") +
+  theme_bw()
+
+flux.PD.g <- ggplot(PD_SR_gDNA, aes(x = flux, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("CH4 flux") +
+  ylab("") +
+  theme_bw()
+
+temp.PD.g <- ggplot(PD_SR_gDNA, aes(x = soil.temp, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil temperature") + 
+  ylab("") +
+  theme_bw()
+
+legend <- get_legend(temp.PD.g)
+
+plot_grid(soil.PD.g + theme(legend.position = 'none'),
+          month.PD.g + theme(legend.position = 'none'),
+          long.PD.g + theme(legend.position = 'none'),
+          flux.PD.g + theme(legend.position = 'none'),
+          temp.PD.g + theme(legend.position = 'none'),
+          legend, ncol = 6)
+```
+
+Pearson correlation tests
+
+```{r}
+cor.test(PD_SR_gDNA$PD, PD_SR_gDNA$flux, 
+                    method = "pearson") # R = -0.8612526; p-value = 0.0003193
+
+cor.test(PD_SR_gDNA$PD, PD_SR_gDNA$soil.temp, 
+                    method = "pearson") # R = 0.5281851 ; p-value = 0.07753
+
+cor.test(PD_SR_gDNA$PD, PD_SR_gDNA$longitude, 
+                    method = "pearson") # R = -0.5379556; p-value = 0.07121
+
+cor.test(PD_SR_gDNA$SR, PD_SR_gDNA$flux, 
+                    method = "pearson") # -0.8393216 p-value = 0.0006398
+
+cor.test(PD_SR_gDNA$SR, PD_SR_gDNA$soil.temp, 
+                    method = "pearson") #0.515651 p-value = 0.08617
+
+summary(lm(flux ~ PD, PD_SR_gDNA))
+
+ggscatter(PD_SR_gDNA, x = "flux", y = "PD", 
+          add = "reg.line", conf.int = TRUE, add.params = list(color = "blue",
+                            fill = "lightgray"),
+          cor.coef = TRUE, cor.method = "pearson")
+```
+
+```{r}
+summary(lm(PD ~ longitude, PD_SR_cDNA))
+summary(lm(PD ~ flux, PD_SR_cDNA))
+summary(lm(PD ~ soil.temp, PD_SR_cDNA))
+```
+
+```{r}
+soil.PD.c <- ggplot(PD_SR_cDNA, aes(x = soil, y = PD, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "viridis", begin = 0.2, end = 0.8) +
+  xlab("Soil type") + 
+  ylab("Phylogenetic diversity") +
+  theme_bw()
+
+month.PD.c <- ggplot(PD_SR_cDNA, aes(x = month, y = PD, colour = replicate)) + geom_point(size = 3) +
+  scale_colour_viridis_d(option = "viridis", begin = 0.2, end = 0.8) +
+  xlab("Month") +
+  ylab("") +
+  theme_bw()
+
+long.PD.c <- ggplot(PD_SR_cDNA, aes(x = longitude, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "viridis", begin = 0.2, end = 0.8) +
+  xlab("Longitude (soil type)") +
+  ylab("") +
+  theme_bw()
+
+flux.PD.c <- ggplot(PD_SR_cDNA, aes(x = flux, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "viridis", begin = 0.2, end = 0.8) +
+  xlab("CH4 flux") +
+  ylab("") +
+  theme_bw()
+
+temp.PD.c <- ggplot(PD_SR_cDNA, aes(x = soil.temp, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "viridis", begin = 0.2, end = 0.8) +
+  xlab("Soil temperature") + 
+  ylab("") +
+  theme_bw()
+
+legend <- get_legend(temp.PD.c)
+
+plot_grid(soil.PD.c + theme(legend.position = 'none'),
+          month.PD.c + theme(legend.position = 'none'),
+          long.PD.c + theme(legend.position = 'none'),
+          flux.PD.c + theme(legend.position = 'none'),
+          temp.PD.c + theme(legend.position = 'none'),
+          legend, ncol = 6)
+```
+
+```{r}
+cor.test(PD_SR_cDNA$PD, PD_SR_cDNA$flux, 
+                    method = "pearson") # R = -0.005184438; p-value = 0.9872
+
+cor.test(PD_SR_cDNA$PD, PD_SR_cDNA$soil.temp, 
+                    method = "pearson") # R = 0.5631344;  p-value = 0.05659
+
+cor.test(PD_SR_cDNA$PD, PD_SR_cDNA$longitude, 
+                    method = "pearson") # R = -0.593661; p-value = 0.04184
+
+cor.test(PD_SR_cDNA$SR, PD_SR_cDNA$flux, 
+                    method = "pearson") # -0.05645568; p-value = 0.8617
+
+cor.test(PD_SR_cDNA$SR, PD_SR_cDNA$soil.temp, 
+                    method = "pearson") # 0.5897278  p-value = 0.04357
+```
+
+Environmental parameters vs. environmental parameters
+
+```{r}
+summary(lm(flux ~ soil.temp, PD_SR))
+summary(lm(PD ~ flux, PD_SR))
+summary(lm(PD ~ soil.temp, PD_SR))
+```
+
+```{r}
+SR.PD <- ggplot(PD_SR, aes(x = flux, y = soil.temp, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("CH4 flux") + 
+  ylab("") +
+  theme_bw()
+
+month.PD <- ggplot(PD_SR, aes(x = month, y = PD, colour = replicate)) + geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Month") +
+  ylab("") +
+  theme_bw()
+
+long.PD <- ggplot(PD_SR, aes(x = longitude, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Longitude (soil type)") +
+  ylab("") +
+  theme_bw()
+
+flux.PD <- ggplot(PD_SR, aes(x = flux, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("CH4 flux") +
+  ylab("") +
+  theme_bw()
+
+temp.PD <- ggplot(PD_SR, aes(x = soil.temp, y = PD, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  xlab("Soil temperature") + 
+  ylab("Phylogenetic diversity") +
+  theme_bw()
+
+legend <- get_legend(temp.PD)
+
+plot_grid(SR.PD + theme(legend.position = 'none'),
+          month.PD + theme(legend.position = 'none'),
+          long.PD + theme(legend.position = 'none'),
+          flux.PD + theme(legend.position = 'none'),
+          temp.PD + theme(legend.position = 'none'),
+          legend, ncol = 6)
+```
+
+## NMH correlations
+
+```{r}
+# correlation tests between MOB and NMH's for gDNA only
+MOB_NMH_gDNA <- read.table("MOB_NMH_gDNA.csv", header = T, row.names = 1, sep = ",")
+```
+
+### MOB correlated to NMH (gDNA)
+
+Methylobacter vs. methylotrophs
+
+```{r}
+# Function to extract correlation coefficient and p-values
+corrFunc <- function(var1, var2, data) {
+  result = cor.test(data[,var1], data[,var2])
+  data.frame(var1, var2, result[c("estimate","p.value","method")], 
+             stringsAsFactors=FALSE)
+}
+
+# Pairs of variables for which we want correlations
+vars1 = data.frame(v1=names(MOB_NMH_gDNA)[1], v2=names(MOB_NMH_gDNA)[2:11])
+
+# Apply corrFunc to all rows of vars
+do.call(rbind, mapply(corrFunc, vars1[,1], vars1[,2], MoreArgs=list(data=MOB_NMH_gDNA), SIMPLIFY=FALSE))
+```
+
+```{r}
+# example of other way to calculate correlation one at a time
+cor.test(MOB_NMH_gDNA$Methylobacter, MOB_NMH_gDNA$Methylomonas, 
+                    method = "pearson") # -0.07492739 ; p-value = 0.817
+```
+
+Methylomonas vs. methylotrophs
+
+```{r}
+# Pairs of variables for which we want correlations
+vars2 = data.frame(v1=names(MOB_NMH_gDNA)[2], v2=names(MOB_NMH_gDNA)[1:11])
+
+# Apply corrFunc to all rows of vars
+do.call(rbind, mapply(corrFunc, vars2[,1], vars1[,2], MoreArgs=list(data=MOB_NMH_gDNA), 
+                              SIMPLIFY=FALSE))
+```
+
+Let's try to turn this into a figure instead of listing out everything in a table. Resource: <https://jkzorz.github.io/2019/06/11/Correlation-heatmaps.html>
+
+```{r}
+library(corrplot)
+```
+
+```{r}
+# define the columns that contain your abundance data. Change the number after the ":" to subset your data
+com = MOB_NMH_gDNA[,1:14]
+
+# re-order genera
+desired_order1 <- c("Methylobacter","Methylomonas", "Hyphomicrobium","Methylophilus", "Methylorubrum","Methyloversatilis", "Methylobacterium", "Methylotenera", "Methyloceanibacter", "Methylibium", "Methyloligella", "Acidovorax", "Comamonas", "Flavobacterium") 
+
+com1 = com[,-4]
+ desired_order1 <- c("Methylomonas","Methylobacter","Methylophilus", "Methylorubrum","Methyloversatilis", "Methylobacterium", "Methylotenera", "Methyloceanibacter", "Methylibium", "Methyloligella", "Acidovorax", "Comamonas", "Flavobacterium") 
+
+new_com <- com1[, desired_order1]
+
+# create a correlation matrix with the data
+cc_pears = cor(new_com, method = "pearson")
+```
+
+```{r}
+corrplot(cc_pears, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.7)
+
+gDNA_corrplot <- corrplot(cc_pears, tl.col = "black",addrect = 4, tl.cex = 0.7,type = "upper")
+
+# to get P values
+res2 <- cor.mtest(new_com, conf.level = .95)
+
+#merged option
+corrplot.mixed(cc_pears, upper= "circle",   tl.pos = "lt", tl.col = "black", tl.cex = 0.7, p.mat = res2$p, insig = "pch", sig.level = c(.05), pch.cex = 1, pch.col = "black", lower = "number",  number.cex = 0.7, tl.srt = 45)
+```
+
+
+### NMH correlated to environmental factors (gDNA)
+
+CH4 flux
+
+```{r}
+# Pairs of variables for which we want correlations
+vars3 = data.frame(v1=names(MOB_NMH_gDNA)[18], v2=names(MOB_NMH_gDNA)[1:17])
+
+# Apply corrFunc to all rows of vars
+do.call(rbind, mapply(corrFunc, vars3[,1], vars3[,2], MoreArgs=list(data=MOB_NMH_gDNA), 
+                              SIMPLIFY=FALSE))
+```
+
+Soil temperature
+
+```{r}
+# Pairs of variables for which we want correlations
+vars4 = data.frame(v1=names(MOB_NMH_gDNA)[21], v2=names(MOB_NMH_gDNA)[1:17])
+
+# Apply corrFunc to all rows of vars
+do.call(rbind, mapply(corrFunc, vars4[,1], vars4[,2], MoreArgs=list(data=MOB_NMH_gDNA), 
+                              SIMPLIFY=FALSE))
+```
+
+Gravimetric water content (GWC)
+
+```{r}
+# Pairs of variables for which we want correlations
+vars5 = data.frame(v1=names(MOB_NMH_gDNA)[22], v2=names(MOB_NMH_gDNA)[1:17])
+
+# Apply corrFunc to all rows of vars
+dfjk <- do.call(rbind, mapply(corrFunc, vars5[,1], vars5[,2], MoreArgs=list(data=MOB_NMH_gDNA), 
+                              SIMPLIFY=FALSE))
+```
+
+If we wanted to plot a relationship of interest:
+
+```{r}
+ggscatter(MOB_NMH_gDNA, x = "Methylobacter", y = "Methylophilus", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson") +
+ggscatter(MOB_NMH_gDNA, x = "soil.temp", y = "Methyloversatilis", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson")
+```
+
+```{r}
+# correlogram
+# removing latitude and longitude
+MOB_NMH_gDNA1 = MOB_NMH_gDNA[, -22:-23]
+#removing the genera that were not detected in gDNA samples
+MOB_NMH_gDNA2 = MOB_NMH_gDNA1[, -15:-20]
+#re-ordering columns so methanotrophs are on the left and methylotrophs are alphabetical on the right
+MOB_NMH_gDNA3 = MOB_NMH_gDNA2[,c(2, 1, 4, 10, 7, 11, 3, 5, 8, 6, 12, 13, 14)]
+
+#calculating all by all correlations
+g_df <- Hmisc::rcorr(as.matrix(MOB_NMH_gDNA2), type=c("pearson"))
+
+
+# plot only the correlations we want
+corrplot(corr=g_df$r[15:17, 1:14], 
+         p.mat=g_df$P[15:17, 1:14], 
+         tl.col = "black",
+         tl.srt = 45,
+         insig = "pch", 
+         sig.level = c(.05), 
+         pch.cex = 3, 
+         pch.col = "black", 
+         addCoef.col="black",  
+         number.cex=0.7,
+         number.digits = 2,
+         cl.length = 5,
+         cl.align.text = "l")
+```
+
+### MOB correlated to NMH (cDNA)
+
+```{r}
+# correlation tests between MOB and NMH's for cDNA only
+MOB_NMH_cDNA <- read.table("MOB_NMH_cDNA.csv", header = T, row.names = 1, sep = ",")
+```
+
+Methylobacter vs. methylotrophs
+
+```{r}
+# Pairs of variables for which we want correlations
+vars6 = data.frame(v1=names(MOB_NMH_cDNA)[1], v2=names(MOB_NMH_cDNA)[2:17])
+
+# Apply corrFunc to all rows of vars
+do.call(rbind, mapply(corrFunc, vars6[,1], vars6[,2], MoreArgs=list(data=MOB_NMH_cDNA), 
+                              SIMPLIFY=FALSE))
+```
+
+Methylomonas vs. methylotrophs
+
+```{r}
+# Pairs of variables for which we want correlations
+vars7 = data.frame(v1=names(MOB_NMH_cDNA)[2], v2=names(MOB_NMH_cDNA)[1:17])
+
+# Apply corrFunc to all rows of vars
+do.call(rbind, mapply(corrFunc, vars7[,1], vars7[,2], MoreArgs=list(data=MOB_NMH_cDNA), 
+                              SIMPLIFY=FALSE))
+```
+
+Methylosinus vs. metylotrophs
+
+```{r}
+# Pairs of variables for which we want correlations
+vars8 = data.frame(v1=names(MOB_NMH_cDNA)[16], v2=names(MOB_NMH_cDNA)[3:17])
+
+# Apply corrFunc to all rows of vars
+do.call(rbind, mapply(corrFunc, vars8[,1], vars8[,2], MoreArgs=list(data=MOB_NMH_cDNA), 
+                              SIMPLIFY=FALSE))
+```
+
+```{r}
+comc = MOB_NMH_cDNA[,1:20]
+
+# re-order genera
+desired_order2 <- c("Methylomonas","Methylobacter","Methyloferula","Methylomicrobium","Methylosinus", "Methylophilus", "Methylorubrum","Methyloversatilis", "Methylobacterium", "Methylotenera", "Methyloceanibacter", "Methylibium", "Methyloligella","Methylopila", "Acidovorax", "Comamonas", "Flavobacterium") 
+
+new_comc <- comc[, desired_order2]
+
+# create a correlation matrix with the data
+cc_pearsc = cor(new_comc, method = "pearson")
+
+corrplot(cc_pearsc)
+
+# make them look nicer
+corrplot(cc_pearsc, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.7, type = "upper")
+
+# to get P values
+res1 <- cor.mtest(new_comc, conf.level = .95)
+```
+
+```{r}
+# corrplot formatting options
+cDNA_corrplot1 <- corrplot(cc_pearsc, tl.col = "black", tl.pos = "tl", tl.cex = 0.7, type = "upper", p.mat = res1$p, insig = "pch", sig.level = c(.05), pch.cex = 1, pch.col = "black", diag = F)
+
+cDNA_corrplot2 <- corrplot(cc_pearsc, method = "number", tl.pos = "l", tl.col = "black", tl.cex = 0.7, type = "lower", diag = F)
+
+cDNA_corrplot1
+cDNA_corrplot2
+
+# merged option
+corrplot.mixed(cc_pearsc, upper= "circle",   tl.pos = "lt", tl.col = "black", tl.cex = 0.7, p.mat = res1$p, insig = "pch", sig.level = c(.05), pch.cex = 1, pch.col = "black", lower = "number", number.cex = 0.7, tl.srt = 45)
+
+#more options, don't love any of these
+corrplot(cc_pearsc, method = "number", tl.col = "black",  tl.cex = 0.7, type = "upper", plotCI = c("circle"), lowCI.mat = res1$lowCI, uppCI.mat = res1$uppCI, p.mat = res1$p, insig = "pch", sig.level = c(.05), pch.cex = 1, pch.col = "black" )
+
+
+corrplot.mixed(cc_pearsc, upper= "circle",   tl.pos = "lt", tl.col = "black", tl.cex = 0.7, p.mat = res1$p, insig = "pch", sig.level = c(.05), pch.cex = 1, pch.col = "black", lower = "number")
+
+
+corrplot.mixed(cc_pearsc, upper= "circle",   tl.pos = "lt", tl.col = "black", tl.cex = 0.7, p.mat = res1$p, insig = "pch", sig.level = c(.05), pch.cex = 1, pch.col = "black", lower = "number", number.cex = 0.5,  tl.srt = 45)
+```
+
+
+
+### NMH correlated to environmental parameters (cDNA)
+
+Methane flux
+
+```{r}
+# Pairs of variables for which we want correlations
+vars9 = data.frame(v1=names(MOB_NMH_cDNA)[18], v2=names(MOB_NMH_cDNA)[1:17])
+
+# Apply corrFunc to all rows of vars
+do.call(rbind, mapply(corrFunc, vars9[,1], vars9[,2], MoreArgs=list(data=MOB_NMH_cDNA), 
+                              SIMPLIFY=FALSE))
+
+```
+
+```{r}
+# correlogram
+MOB_NMH_cDNA1 = MOB_NMH_cDNA[, -26]
+MOB_NMH_cDNA2 = MOB_NMH_cDNA1[, -22:-23]
+
+```
+
+```{r}
+#calculate correlation
+c_df <- Hmisc::rcorr(as.matrix(MOB_NMH_cDNA2), type=c("pearson"))
+
+corrplot(corr=c_df$r[21:23, 1:20], 
+         p.mat=c_df$P[21:23, 1:20], 
+         tl.col = "black",
+         tl.srt = 45,
+         insig = "pch", 
+         sig.level = c(.05), 
+         pch.cex = 3, 
+         pch.col = "black", 
+         addCoef.col="black",  
+         number.cex=0.7,
+         number.digits = 2,
+         cl.length = 5,
+         cl.align.text = "l")
+```
+
+
+Soil temperature
+
+```{r}
+# Pairs of variables for which we want correlations
+vars10 = data.frame(v1=names(MOB_NMH_cDNA)[21], v2=names(MOB_NMH_cDNA)[1:17])
+
+# Apply corrFunc to all rows of vars
+do.call(rbind, mapply(corrFunc, vars10[,1], vars10[,2], MoreArgs=list(data=MOB_NMH_cDNA), 
+                              SIMPLIFY=FALSE))
+```
+
+Gravimetric water content (GWC)
+
+```{r}
+# Pairs of variables for which we want correlations
+vars11 = data.frame(v1=names(MOB_NMH_cDNA)[22], v2=names(MOB_NMH_cDNA)[1:17])
+
+# Apply corrFunc to all rows of vars
+GC <- do.call(rbind, mapply(corrFunc, vars11[,1], vars11[,2], MoreArgs=list(data=MOB_NMH_cDNA), 
+                              SIMPLIFY=FALSE))
+```
+
+We can also plot anything of interest
+
+```{r}
+ggscatter(MOB_NMH_cDNA, x = "Methylobacter", y = "Methylophilus", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson") +
+ggscatter(MOB_NMH_cDNA, x = "Methylomonas", y = "Methylophilus", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson") 
+```
+
+# Methanotroph-only
+
+```{r}
+# remove genera in column names that are not part of the MOB/NMH subgroup we are interested in
+gen_taxa_proportions_tab_MOB_only_t <- gen_taxa_proportions_tab_df %>% select(matches("Methylosinus|Methylomonas|Methylomicrobium|Methyloferula|Methylobacter"))%>%
+  select(-Methylobacterium)
+
+# transpose table again so that rows are genera and columns are samples
+gen_taxa_proportions_tab_MOBonly1 <- as.data.frame(t(gen_taxa_proportions_tab_MOB_only_t))
+
+# make sure we are in a data frame
+gen_taxa_proportions_tab_MOBonly1 <- gen_taxa_proportions_tab_MOBonly1 %>%
+  as_tibble(rownames= "Genera") %>% 
+  as.data.frame(rownames=paste0("Genera", 1:24)) 
+
+prop_MOB <- pivot_longer(gen_taxa_proportions_tab_MOBonly1, !Genera, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+
+# Adding information from our metadata to group/color our bubble plot based on different characteristics of our samples
+sample_info_for_merge1 <- data.frame(
+  "Sample" = row.names(bact_sample_info_table),
+  "soil" = bact_sample_info_table$soil,
+  "replicate"= bact_sample_info_table$replicate,
+  "template" = bact_sample_info_table$template,
+  "soil.temp" = bact_sample_info_table$soil.temp,
+  "month" = bact_sample_info_table$month,
+  stringsAsFactors=F)
+
+# merging this table with the table containing our proportions
+prop_MOB_info <- merge(prop_MOB, sample_info_for_merge1) 
+```
+
+```{r}
+ggplot(prop_MOB_info, aes(x = Sample, y = Proportion)) + 
+  geom_bar(stat = "identity") +  theme(legend.key=element_blank(), 
+        axis.text.x = element_text(colour = "black", size = 12,
+                                   face = "bold", angle = 90, 
+                                   vjust = 0.3, hjust = 1))
+
+
+ggplot(prop_MOB_info, aes(Genera, Proportion)) +
+  geom_jitter(aes(color=factor(replicate)), size=2.5, width=0.15, height=0) +
+  geom_boxplot(fill=NA, outlier.color=NA) + 
+  theme_bw() +  
+  theme(axis.text.x=element_text(size=12, angle=45, hjust=1), legend.title=element_blank()) 
+
+
+ggplot(prop_MOB_info, aes(Genera, Proportion)) + geom_bar(aes(fill = replicate), stat = "identity", position = "dodge") +  theme_bw() +  
+  theme(axis.text.x=element_text(size=12, angle=45, hjust=1), legend.title=element_blank()) 
+```
+
+```{r}
+colours = c("blue","#4FFF00")
+
+ggplot(prop_MOB_info, aes(x = Sample, y = Genera)) + 
+  geom_point(aes(size = Proportion, fill = soil), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00000001, 15), range = c(1,10),
+                        breaks = c(0.1, 1, 15)) +
+  facet_grid(month ~ template, margin = TRUE) +
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
+  scale_fill_manual(values = colours) +
+  theme_bw() + my_theme +
+  theme(axis.text.x = element_text(size = 12, angle = 90,vjust = 0, hjust = 0))
+```
+
+```{r}
+gen_taxa_proportions_tab_MOB_only <- t(gen_taxa_proportions_tab_MOB_only_t)
+
+MOB_sum <- as.data.frame(colSums(gen_taxa_proportions_tab_MOB_only))
+
+```
+
+## Phyla and flux
+
+```{r}
+proteo_x <- read.table("proteo.csv", header = T, row.names = 1, sep = ",")
+```
+
+```{r}
+gamma.flux <- ggplot(proteo_x, aes(x = flux, y = Gammaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+alpha.flux <- ggplot(proteo_x, aes(x = flux, y = Alphaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+beta.flux <- ggplot(proteo_x, aes(x = flux, y = Betaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+delta.flux <- ggplot(proteo_x, aes(x = flux, y = Deltaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+nonprot.flux <- ggplot(proteo_x, aes(x = flux, y = Non_Proteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+unprot.flux <- ggplot(proteo_x, aes(x = flux, y = Unresolved_Proteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+
+plot_grid(gamma.flux + theme(legend.position = 'none'),
+          alpha.flux + theme(legend.position = 'none'),
+          beta.flux + theme(legend.position = 'none'),
+          delta.flux + theme(legend.position = 'none'),
+          nonprot.flux + theme(legend.position = 'none'),
+          unprot.flux + theme(legend.position = 'none'),
+         ncol = 3)
+```
+
+Median flux, average Beta/Gamma/Alphaproteobacteria 
+```{r}
+proteo_med <- read.table("proteo_median.csv", header = T, row.names = 1, sep = ",")
+
+gDNA_wanted <- c("gDNA")
+cDNA_wanted <- c("cDNA")
+
+proteo_med_gDNA <- proteo_med %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% gDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+proteo_med_cDNA <- proteo_med %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% cDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+# gDNA samples tests
+summary(lm(flux_median ~ avg_Gammaproteobacteria, proteo_med_gDNA))
+cor.test(proteo_med_gDNA$flux_median, proteo_med_gDNA$avg_Gammaproteobacteria, 
+                    method = "pearson")
+# gDNA plots
+ggplot(proteo_med_gDNA, aes(x = flux_median, y = avg_Gammaproteobacteria)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+#calculate correlation for gDNA
+gDNA_proteo_corr<- Hmisc::rcorr(as.matrix(proteo_med_gDNA), type=c("pearson"))
+
+corrplot(corr=gDNA_proteo_corr$r[17:25, 1:16], 
+         p.mat=gDNA_proteo_corr$P[17:25, 1:16], 
+         tl.col = "black",
+         tl.srt = 45,
+         insig = "pch", 
+         sig.level = c(.05), 
+         pch.cex = 3, 
+         pch.col = "black", 
+         addCoef.col="black",  
+         number.cex=0.7,
+         number.digits = 2,
+         cl.length = 5,
+         cl.align.text = "l")
+
+#calculate correlation for cDNA
+cDNA_proteo_corr<- Hmisc::rcorr(as.matrix(proteo_med_cDNA), type=c("pearson"))
+
+corrplot(corr=cDNA_proteo_corr$r[17:25, 1:16], 
+         p.mat=cDNA_proteo_corr$P[17:25, 1:16], 
+         tl.col = "black",
+         tl.srt = 45,
+         insig = "pch", 
+         sig.level = c(.05), 
+         pch.cex = 3, 
+         pch.col = "black", 
+         addCoef.col="black",  
+         number.cex=0.7,
+         number.digits = 2,
+         cl.length = 5,
+         cl.align.text = "l")
+
+```
+
+
+
+
+```{r}
+summary(lm(flux ~ Deltaproteobacteria, proteo_med))
+```
+
+```{r}
+gDNA_wanted <- c("gDNA")
+
+proteo_x_gDNA <- proteo_x %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% gDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+```
+
+```{r}
+gamma.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Gammaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+alpha.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Alphaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+beta.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Betaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+delta.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Deltaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+nonprot.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Non_Proteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+unprot.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Unresolved_Proteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+
+plot_grid(gamma.flux.gDNA + theme(legend.position = 'none'),
+          alpha.flux.gDNA + theme(legend.position = 'none'),
+          beta.flux.gDNA + theme(legend.position = 'none'),
+          delta.flux.gDNA + theme(legend.position = 'none'),
+          nonprot.flux.gDNA + theme(legend.position = 'none'),
+          unprot.flux.gDNA + theme(legend.position = 'none'), 
+         ncol = 3)
+```
+
+```{r}
+summary(lm(flux ~ Gammaproteobacteria, proteo_x_gDNA))
+summary(lm(flux ~ Betaproteobacteria, proteo_x_gDNA))
+summary(lm(flux ~ Deltaproteobacteria, proteo_x_gDNA))
+summary(lm(flux ~ Non_Proteobacteria, proteo_x_gDNA))
+summary(lm(flux ~ Unresolved_Proteobacteria, proteo_x_gDNA))
+```
+
+#### Pearson correlation analysis of environmental parameters with main Proteobacteria of all soil samples
+
+```{r}
+cor.test(proteo_x_gDNA$flux, proteo_x_gDNA$Gammaproteobacteria, 
+                    method = "pearson") # 0.7819699  ; p-value = 0.002655
+cor.test(proteo_x_gDNA$flux, proteo_x_gDNA$Betaproteobacteria, 
+                    method = "pearson") # 0.7200743 ; p-value = 0.008267
+cor.test(proteo_x_gDNA$flux, proteo_x_gDNA$Deltaproteobacteria, 
+                    method = "pearson") # 0.1561841 ; p-value = 0.6279
+cor.test(proteo_x_gDNA$flux, proteo_x_gDNA$Alphaproteobacteria, 
+                    method = "pearson") # -0.4871129 ; p-value = 0.1082
+cor.test(proteo_x_gDNA$flux, proteo_x_gDNA$Non_Proteobacteria, 
+                    method = "pearson") # -0.6664388 ; p-value = 0.01795
+cor.test(proteo_x_gDNA$flux, proteo_x_gDNA$Unresolved_Proteobacteria, 
+                    method = "pearson") # -0.6467522 ; p-value = 0.02303 
+```
+
+```{r echo=TRUE}
+cor.test(proteo_x_gDNA$soil.temp, proteo_x_gDNA$Gammaproteobacteria, 
+                    method = "pearson") # -0.9525199; p-value = 1.754e-06
+cor.test(proteo_x_gDNA$soil.temp, proteo_x_gDNA$Betaproteobacteria, 
+                    method = "pearson") # -0.9629493 ; p-value = 5.167e-07
+cor.test(proteo_x_gDNA$soil.temp, proteo_x_gDNA$Deltaproteobacteria, 
+                    method = "pearson") # -0.8618551 ; p-value = 0.0003128
+cor.test(proteo_x_gDNA$soil.temp, proteo_x_gDNA$Alphaproteobacteria, 
+                    method = "pearson") # 0.9455267 ; p-value = 3.446e-06
+cor.test(proteo_x_gDNA$soil.temp, proteo_x_gDNA$Non_Proteobacteria, 
+                    method = "pearson") # 0.9908308 ; p-value = 5.026e-10
+cor.test(proteo_x_gDNA$soil.temp, proteo_x_gDNA$Unresolved_Proteobacteria, 
+                    method = "pearson") # -0.7987439; p-value = 0.001834
+
+ggplot(proteo_x_gDNA, aes(x = soil.temp, y = Gammaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+```
+
+```{r}
+cor.test(proteo_x_gDNA$shannon, proteo_x_gDNA$Betaproteobacteria, 
+                    method = "pearson") # 0.9381929 ; p-value = 6.4e-06
+
+
+cor.test(proteo_x_gDNA$GWC, proteo_x_gDNA$Gammaproteobacteria, 
+                    method = "pearson") # 0.2343795 ; p-value = 0.4634
+cor.test(proteo_x_gDNA$GWC, proteo_x_gDNA$Betaproteobacteria, 
+                    method = "pearson") # 0.3944996 ; p-value = 0.2044
+cor.test(proteo_x_gDNA$GWC, proteo_x_gDNA$Deltaproteobacteria, 
+                    method = "pearson") # 0.8389205 ; p-value = 0.0006474
+cor.test(proteo_x_gDNA$GWC, proteo_x_gDNA$Alphaproteobacteria, 
+                    method = "pearson") # -0.5148088 ; p-value = 0.08677
+cor.test(proteo_x_gDNA$GWC, proteo_x_gDNA$Non_Proteobacteria, 
+                    method = "pearson") # -0.4463997; p-value = 0.1457
+cor.test(proteo_x_gDNA$GWC, proteo_x_gDNA$Unresolved_Proteobacteria, 
+                    method = "pearson") # 0.0908964 ; p-value = 0.7788
+```
+
+```{r}
+gamma.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Gammaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+alpha.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Alphaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+beta.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Betaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+delta.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Deltaproteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+nonprot.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Non_Proteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+unprot.flux.gDNA <- ggplot(proteo_x_gDNA, aes(x = flux, y = Unresolved_Proteobacteria, colour = replicate)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+    theme_bw()
+
+
+plot_grid(gamma.flux.gDNA + theme(legend.position = 'none'),
+          alpha.flux.gDNA + theme(legend.position = 'none'),
+          beta.flux.gDNA + theme(legend.position = 'none'),
+          delta.flux.gDNA + theme(legend.position = 'none'),
+          nonprot.flux.gDNA + theme(legend.position = 'none'),
+          unprot.flux.gDNA + theme(legend.position = 'none'), 
+         ncol = 3)
+```
+
+```{r}
+cDNA_wanted <- c("cDNA")
+
+proteo_x_cDNA <- proteo_x %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% cDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+```
+
+```{r}
+cor.test(proteo_x_cDNA$flux, proteo_x_cDNA$Gammaproteobacteria, 
+                    method = "pearson") # -0.1710515 ; p-value = 0.595
+
+cor.test(proteo_x_cDNA$flux, proteo_x_cDNA$Betaproteobacteria, 
+                    method = "pearson") # -0.4180727; p-value = 0.1762
+
+cor.test(proteo_x_cDNA$flux, proteo_x_cDNA$Deltaproteobacteria, 
+                    method = "pearson") # 0.8181226 ; p-value = 0.001145
+
+cor.test(proteo_x_cDNA$flux, proteo_x_cDNA$Alphaproteobacteria, 
+                    method = "pearson") # 0.4465275;  p-value = 0.1456 
+
+cor.test(proteo_x_cDNA$flux, proteo_x_cDNA$Non_Proteobacteria, 
+                    method = "pearson") # 0.05688749 ; p-value = 0.8606
+
+cor.test(proteo_x_cDNA$flux, proteo_x_cDNA$Unresolved_Proteobacteria, 
+                    method = "pearson") # 0.4981607 ; p-value = 0.09929
+```
+
+```{r}
+cor.test(proteo_x_cDNA$soil.temp, proteo_x_cDNA$Gammaproteobacteria, 
+                    method = "pearson") # 0.2106151  ; p-value = 0.5111
+
+cor.test(proteo_x_cDNA$soil.temp, proteo_x_cDNA$Betaproteobacteria, 
+                    method = "pearson") # -0.4306946 ; p-value = 0.1622
+
+cor.test(proteo_x_cDNA$soil.temp, proteo_x_cDNA$Deltaproteobacteria, 
+                    method = "pearson") # -0.2411307 ; p-value = 0.4503
+
+cor.test(proteo_x_cDNA$soil.temp, proteo_x_cDNA$Alphaproteobacteria, 
+                    method = "pearson") # 0.3625589 ;  p-value = 0.2468 
+
+cor.test(proteo_x_cDNA$soil.temp, proteo_x_cDNA$Non_Proteobacteria, 
+                    method = "pearson") # 0.3122699  ; p-value = 0.3231
+
+cor.test(proteo_x_cDNA$soil.temp, proteo_x_cDNA$Unresolved_Proteobacteria, 
+                    method = "pearson") # -0.5476807 ; p-value = 0.06529
+```
+
+```{r}
+cor.test(proteo_x_cDNA$GWC, proteo_x_cDNA$Gammaproteobacteria, 
+                    method = "pearson") # -0.2006104; p-value = 0.5319
+cor.test(proteo_x_cDNA$GWC, proteo_x_cDNA$Betaproteobacteria, 
+                    method = "pearson") # 0.903211 ; p-value = 5.675e-05
+cor.test(proteo_x_cDNA$GWC, proteo_x_cDNA$Deltaproteobacteria, 
+                    method = "pearson") # -0.537877 ;  p-value = 0.07126
+cor.test(proteo_x_cDNA$GWC, proteo_x_cDNA$Alphaproteobacteria, 
+                    method = "pearson") # -0.8458093; p-value = 0.0005267
+cor.test(proteo_x_cDNA$GWC, proteo_x_cDNA$Non_Proteobacteria, 
+                    method = "pearson") # -0.258643 ; p-value = 0.417
+cor.test(proteo_x_cDNA$GWC, proteo_x_cDNA$Unresolved_Proteobacteria, 
+                    method = "pearson") # 0.03213866 ; p-value = 0.921
+```
+
+```{r}
+
+bact_sample_info_table_means <- read.table("June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",")
+MOB_num <- cbind(gen_taxa_proportions_tab_MOB_only_t, bact_sample_info_table_means)
+
+gDNA_wanted <- c("gDNA")
+
+MOB_num_gDNA <- MOB_num %>%
+  filter(template %in% gDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12))
+
+MOB_num_gDNA1 <- read.table("MOB_num_gDNA.csv", header = T, row.names = 1, sep = ",")
+as.matrix(MOB_num_gDNA1)
+MOB_num_gDNA1 <- as.data.frame(MOB_num_gDNA1)
+
+# flux correlation test
+cor.test(MOB_num_gDNA$flux, MOB_num_gDNA$Methylobacter, 
+                    method = "pearson") # R = 0.5046983 ;  p-value = 0.09424
+cor.test(MOB_num_gDNA$flux, MOB_num_gDNA$Methylomonas, 
+                    method = "pearson") # R = -0.2023028  ;  p-value = 0.5283
+cor.test(MOB_num_gDNA1$flux, MOB_num_gDNA1$total, 
+                    method = "pearson") # 0.4570655; p-value = 0.1352
+
+# soil temp correlation test
+cor.test(MOB_num_gDNA$soil.temp, MOB_num_gDNA$Methylobacter, 
+                    method = "pearson") # R = -0.3069853  ;  p-value = 0.3318
+cor.test(MOB_num_gDNA$soil.temp, MOB_num_gDNA$Methylomonas, 
+                    method = "pearson") # R = 0.350949   ;  p-value = 0.2633
+cor.test(MOB_num_gDNA1$soil.temp, MOB_num_gDNA1$total, 
+                    method = "pearson") # -0.2148139 ; p-value = 0.5026
+
+
+ggscatter(MOB_num_gDNA, x = "Methylobacter", y = "flux", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson")
+
+# gravitational water content correlation test
+cor.test(MOB_num_gDNA1$GWC, MOB_num_gDNA1$Methylobacter, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_gDNA1$GWC, MOB_num_gDNA1$Methylomonas, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_gDNA1$GWC, MOB_num_gDNA1$total, 
+                    method = "pearson") # n.s.
+
+shapiro.test(MOB_num_gDNA$flux) # W = 0.60282, p-value = 0.0001132
+shapiro.test(MOB_num_gDNA$Methylobacter) # W = 0.37601, p-value = 2.466e-06
+```
+
+```{r}
+cDNA_wanted <- c("cDNA")
+
+MOB_num_cDNA <- MOB_num %>%
+  filter(template %in% cDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12))
+
+MOB_num_cDNA1 <- read.table("MOB_num_cDNA.csv", header = T, row.names = 1, sep = ",")
+MOB_num_cDNA1 <- as.data.frame(MOB_num_cDNA1)
+
+# flux correlation tests
+cor.test(MOB_num_cDNA$flux, MOB_num_cDNA$Methylobacter, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_cDNA$flux, MOB_num_cDNA$Methylomonas, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_cDNA$flux, MOB_num_cDNA$Methylosinus, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_cDNA$flux, MOB_num_cDNA$Methylomicrobium, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_cDNA$flux, MOB_num_cDNA$Methyloferula, 
+                    method = "pearson") #n.s.
+cor.test(MOB_num_cDNA$flux, MOB_num_cDNA1$total, 
+                    method = "pearson") #n.s.
+
+# soil temperature correlation tests
+cor.test(MOB_num_cDNA$soil.temp, MOB_num_cDNA$Methylobacter, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_cDNA$soil.temp, MOB_num_cDNA$Methylomonas, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_cDNA$soil.temp, MOB_num_cDNA$Methylosinus, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_cDNA$soil.temp, MOB_num_cDNA$Methylomicrobium, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_cDNA$soil.temp, MOB_num_cDNA$Methyloferula, 
+                    method = "pearson") #n.s.
+cor.test(MOB_num_cDNA1$soil.temp, MOB_num_cDNA1$total, 
+                    method = "pearson") # n.s.
+
+# gravitational water content correlation test
+cor.test(MOB_num_cDNA1$GWC, MOB_num_cDNA1$Methylobacter, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_cDNA1$GWC, MOB_num_cDNA1$Methylomonas, 
+                    method = "pearson") #n.s.
+cor.test(MOB_num_cDNA1$GWC, MOB_num_cDNA1$Methylosinus, 
+                    method = "pearson") # n.s.
+cor.test(MOB_num_cDNA1$GWC, MOB_num_cDNA1$Methylomicrobium, 
+                    method = "pearson") #n.s.
+cor.test(MOB_num_cDNA1$GWC, MOB_num_cDNA1$Methyloferula, 
+                    method = "pearson") #n.s.
+cor.test(MOB_num_cDNA1$GWC, MOB_num_cDNA1$total, 
+                    method = "pearson") #n.s.
+```
+
+```{r}
+cor.test(MOB_num_gDNA1$GWC, MOB_num_gDNA1$flux, 
+                    method = "pearson") #n.s
+```
+
+```{r}
+# remove genera in column names that are not part of the MOB/NMH subgroup we are interested in
+gen_taxa_proportions_tab_MOB_NMH_t <- gen_taxa_proportions_tab_df %>%
+  select(matches("Methylosinus|Methylocystis|Methylocella|Methylocapsa|Methyloferula|Methylomonas|Methylobacter|Methylococcus|Methylomicrobium|Methylosphaera|Methylocaldum|Methylosarcina|Methylogaea|Methylosoma|Methylomarinum|Methylovulum|Methyloprofundus|Methylophilus|Clonothrix|Methylothermus|Methylohalobius|Crenothrix|Methylacidiphilum|Methylobacterium|Methyloversatilis|Methylotenera"))
+
+# transpose table again so that rows are genera and columns are samples
+gen_taxa_proportions_tab_MOB_NMH1 <- as.data.frame(t(gen_taxa_proportions_tab_MOB_NMH_t))
+
+# make sure we are in a data frame
+gen_taxa_proportions_tab_MOB_NMH <- gen_taxa_proportions_tab_MOB_NMH1 %>%
+  as_tibble(rownames= "Genera") %>% 
+  as.data.frame(rownames=paste0("Genera", 1:24)) 
+
+prop_MOBNMH <- pivot_longer(gen_taxa_proportions_tab_MOB_NMH, !Genera, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+```
+
+```{r}
+ggplot(prop_MOBNMH, aes(x=Sample, y=Proportion, fill= Genera)) +
+  geom_bar(width=0.6, stat="identity", color = "black") +
+  theme_bw() +
+  scale_y_continuous(limits = c(0,1.5)) +
+  theme(axis.text.x=element_text(angle=90, vjust=0.4, hjust=1), legend.title=element_blank()) +
+  labs(x="Sample", y="% of 16S rRNA gene copies recovered", title="All samples")
+
+```

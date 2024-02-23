@@ -1,0 +1,3018 @@
+---
+title: "RBC 16S analysis: Primary analysis (alpha + beta diversity)"
+output: html_document
+---
+
+Written by Delaney Beals \| Date created: October 18, 2023 \| Date most recent edit: February 21, 2024
+
+# 16S Amplicon analysis in R
+
+Resource: <https://astrobiomike.github.io/amplicon/dada2_workflow_ex#analysis-in-r>
+
+### Getting set up
+
+```{r}
+# Identify the working directory
+getwd()
+
+# Check what packages are installed & loaded
+(.packages())
+```
+
+### Loading libraries/packages
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse) 
+library(phyloseq)
+library(vegan)
+library(DESeq2)
+library(dendextend)
+library(viridis)
+library(ggplot2)
+library(ecolTest)
+```
+
+```{r}
+# double check what packages are installed & loaded
+(.packages())
+```
+
+Occasionally a package will give me trouble, usually I can get it to download using the following. Just change the "DESeq2" to whatever package you need.
+
+```{r}
+install.packages("DESeq2")
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install("DESeq2") 
+```
+
+### Reading in our data
+
+We need our ASV counts table (samples in columns, ASVs in rows, counts in cells), our taxonmy table (assigning taxonomy to each ASV), and metadata (any additional information about the samples such as soil type, month etc.)
+
+```{r}
+# LOAD IN DATA
+bact_count_table <- read.table("data/June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+
+bact_taxa_table <- as.matrix(read.table("data/June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
+# Need to specify row.names = 1 so that sample names do not appear as their own column. Instead they are the row headings (names).
+
+bact_sample_info_table <- read.table("data/June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",") # We will also load in a metadata table that contains the necessary additional characteristics about the samples (type of culture method)
+```
+
+We also want to generate a phyloseq object which basically just combines all three of the above tables into one. 
+```{r}
+# using the phyloseq package, we will combine our three tables into one phyloseq object
+otu_table <- phyloseq::otu_table(bact_count_table, taxa_are_rows=T)
+tax_table <- phyloseq::tax_table(bact_taxa_table)
+sample_data <- phyloseq::sample_data(bact_sample_info_table)
+
+# now generate the phyloseq object
+ASV_physeq <- phyloseq(otu_table, tax_table, sample_data)
+```
+
+## BETA DIVERSITY
+
+Beta diversity is looking at how our samples compare to each other. This involves calculating metrics such as distances or dissimilarities based on pairwise comparisons of samples - they don't exist for a single sample, but rather only as metrics that relate samples to each other. We typically generate some exploratory figures to see how our data looks and how the samples relate to one another.
+
+We're going to use Euclidean distances to generate some exploratory visualizations of our samples. Since differences in sampling depths between samples can influence distance/dissimilarity metrics, we first need to somehow normalize across our samples.
+
+### DESeq2: Normalizing for sampling depth
+
+This is a point of contention for many in the field and is still being discussed. There does not seem to be a correct answer and practices that were once common that were later deemed inadmissible are now deemed admissible again. Essentially, there are three main ways of normalizing for sampling depth:
+
+1.  subsampling each sample down to the lowest sample's depth (**rarefaction**): can be done once or multiple times after which an average of multiple subsamples is calculated
+2.  turning counts into proportions of the total for each sample (**relative** **abundance**)
+3.  variance stabilizing transformation (**DESeq2**), which we will be using
+
+```{r}
+bact_deseq_counts <- DESeqDataSetFromMatrix(bact_count_table, colData = bact_sample_info_table, design = ~month) #first make a DESeq2 object
+
+bact_deseq_counts_vst <- varianceStabilizingTransformation(bact_deseq_counts) 
+```
+
+NOTE: If you get this error here with your dataset: "Error in estimateSizeFactorsForMatrix(counts(object), locfunc =locfunc, : every gene contains at least one zero, cannot compute log geometric means", that can be because the count table is sparse with many zeroes, which is common with marker-gene surveys. In that case you'd need to use a specific function first that is equipped to deal with that. You could run: deseq_counts \<- estimateSizeFactors(deseq_counts, type = "poscounts"). Now followed by the transformation function: deseq_counts_vst \<- varianceStabilizingTransformation(deseq_counts)
+
+```{r}
+
+bact_vst_trans_counts_table <- assay(bact_deseq_counts_vst) #pulling out the transformed table
+
+euc_dist <- dist(t(bact_vst_trans_counts_table)) #calculating our Euclidiean distance matrix
+```
+
+Because some ASVs had a count of 0, they became negative after variance stabilizing transformation. So now we need to change all ASV counts that are less than 0 (i.e. negative) to 0
+
+```{r}
+bact_vst_trans_counts_table[bact_vst_trans_counts_table < 0.0] <- 0.0
+```
+
+### DESeq2: Hierarchial clustering
+
+Now that we have a Euclidean distance matrix, make and plot a hierarchial clustering of our samples.
+
+```{r}
+euc_clust <- hclust(euc_dist, method="ward.D2")
+plot(euc_clust)
+```
+
+From the first look at this data, the broadest clusters are separating by soil type (R = riparian, U = upland). The only exception is 10RcDNA1-3, which are clustering most closely to 6RgDNA1-3.
+
+The closest clusters in general are the extraction replicates from the same soil samples, which makes sense since those should be the most similar. However, it seems that the 10RUcDNA3 is off on its own, away from it's other two replicates.
+
+This is starting to suggest that the differences in microbial structure may either be coming from the time of year that we sampled or the type of soil that we sampled.
+
+I am going to color this dendrogram differently based on different shared characteristics to see if there's a more obvious pattern emerging.
+
+```{r}
+euc_dend <- as.dendrogram(euc_clust, hang=0.1)
+```
+
+**Color by nucleic acid template**
+
+Very clearly we are not getting separation based on which nucleic acid template we used (cDNA/RNA or gDNA), but barring 10RgDNA1-3, most of the gDNA and cDNA samples are clustered close to each other in the sense that they have the same month and soil type. That is reassuring since anything that is in the cDNA sample will have to be in the analogous gDNA sample, just with potentially different abundances.
+
+
+```{r}
+dend_cols <- as.character(bact_sample_info_table$color_soil[order.dendrogram(euc_dend)])
+labels_colors(euc_dend) <- dend_cols
+plot(euc_dend, ylab="VST Euc. dist.")
+```
+
+**Color by soil type**
+
+Riparian is clustering with riparian and upland is clustering with upland, only exception in 10RcDNA1-3.
+
+### DESeq2: Normalizing for sampling depth with gDNA samples only
+
+```{r}
+# LOAD IN DATA
+bact_count_table_gDNA <- read.csv("June_Oct_MERGE_ASV_counts_gDNA.csv", header = T, row.names = 1, sep = ",")  
+
+bact_sample_info_table_gDNA <- read.csv("June_Oct_16S_MERGE_metadata_gDNA.csv", header = T, row.names = 1, sep = ",")
+```
+
+```{r}
+bact_deseq_counts_gDNA <- DESeqDataSetFromMatrix(bact_count_table_gDNA, colData = bact_sample_info_table_gDNA, design = ~month) #first make a DESeq2 object
+
+bact_deseq_counts_vst_gDNA <- varianceStabilizingTransformation(bact_deseq_counts_gDNA) 
+
+bact_vst_trans_counts_table_gDNA <- assay(bact_deseq_counts_vst_gDNA) #pulling out the transformed table
+
+euc_dist_gDNA <- dist(t(bact_vst_trans_counts_table_gDNA)) #calculating our Euclidiean distance matrix
+
+bact_vst_trans_counts_table_gDNA[bact_vst_trans_counts_table_gDNA < 0.0] <- 0.0
+```
+
+```{r}
+euc_clust_gDNA <- hclust(euc_dist_gDNA, method="ward.D2")
+plot(euc_clust_gDNA)
+
+euc_dend_gDNA <- as.dendrogram(euc_clust_gDNA, hang=0.1)
+
+dend_cols_gDNA <- as.character(bact_sample_info_table_gDNA$color_soil[order.dendrogram(euc_dend_gDNA)])
+
+labels_colors(euc_dend_gDNA) <- dend_cols_gDNA
+plot(euc_dend_gDNA, ylab="VST Euc. dist.")
+
+dend_cols_gDNA <- as.character(bact_sample_info_table_gDNA$color_month[order.dendrogram(euc_dend_gDNA)])
+
+labels_colors(euc_dend_gDNA) <- dend_cols_gDNA
+plot(euc_dend_gDNA, ylab="VST Euc. dist.")
+```
+
+```{r}
+# transform our vst counts table so that sample names are in rows and ASVs are in columns
+bact_vst_trans_counts_table_gDNA_t <- as.data.frame(t(bact_vst_trans_counts_table_gDNA))
+
+gDNA_euc_dist_gDNA <- dist(bact_vst_trans_counts_table_gDNA_t)
+
+gDNA_bray_dist_gDNA <- vegdist(bact_vst_trans_counts_table_gDNA_t)
+
+set.seed(777) #don't change this
+anova(betadisper(gDNA_bray_dist_gDNA, bact_sample_info_table_gDNA$soil)) 
+adonis2(gDNA_bray_dist_gDNA ~ bact_sample_info_table_gDNA$soil, permutations = 9999)
+
+
+set.seed(777) #don't change this
+anova(betadisper(gDNA_bray_dist_gDNA, bact_sample_info_table_gDNA$month)) 
+adonis2(gDNA_bray_dist_gDNA ~ bact_sample_info_table_gDNA$month, permutations = 9999)
+```
+
+### DESeq2: Normalizing for sampling depth with cDNA samples only
+
+```{r}
+# LOAD IN DATA
+bact_count_table_cDNA <- read.csv("June_Oct_MERGE_ASV_counts_cDNA.csv", header = T, row.names = 1, sep = ",")  
+
+bact_sample_info_table_cDNA <- read.csv("June_Oct_16S_MERGE_metadata_cDNA.csv", header = T, row.names = 1, sep = ",")
+```
+
+```{r}
+bact_deseq_counts_cDNA <- DESeqDataSetFromMatrix(bact_count_table_cDNA, colData = bact_sample_info_table_cDNA, design = ~month) 
+
+bact_deseq_counts_vst_cDNA <- varianceStabilizingTransformation(bact_deseq_counts_cDNA) 
+
+bact_vst_trans_counts_table_cDNA <- assay(bact_deseq_counts_vst_cDNA) #pulling out the transformed table
+
+euc_dist_cDNA <- dist(t(bact_vst_trans_counts_table_cDNA)) #calculating our Euclidiean distance matrix
+
+bact_vst_trans_counts_table_cDNA[bact_vst_trans_counts_table_cDNA < 0.0] <- 0.0
+```
+
+```{r}
+euc_clust_cDNA <- hclust(euc_dist_cDNA, method="ward.D2")
+plot(euc_clust_cDNA)
+
+euc_dend_cDNA <- as.dendrogram(euc_clust_cDNA, hang=0.1)
+
+dend_cols_cDNA <- as.character(bact_sample_info_table_cDNA$color_soil[order.dendrogram(euc_dend_cDNA)])
+
+labels_colors(euc_dend_cDNA) <- dend_cols_cDNA
+plot(euc_dend_cDNA, ylab="VST Euc. dist.")
+
+dend_cols_cDNA <- as.character(bact_sample_info_table_cDNA$color_month[order.dendrogram(euc_dend_cDNA)])
+
+labels_colors(euc_dend_cDNA) <- dend_cols_cDNA
+plot(euc_dend_cDNA, ylab="VST Euc. dist.")
+```
+
+```{r}
+# transform our vst counts table so that sample names are in rows and ASVs are in columns
+bact_vst_trans_counts_table_cDNA_t <- as.data.frame(t(bact_vst_trans_counts_table_cDNA))
+
+cDNA_euc_dist_cDNA <- dist(bact_vst_trans_counts_table_cDNA_t)
+
+cDNA_bray_dist_cDNA <- vegdist(bact_vst_trans_counts_table_cDNA_t)
+
+set.seed(777) #don't change this
+anova(betadisper(cDNA_bray_dist_cDNA, bact_sample_info_table_cDNA$soil)) 
+adonis2(cDNA_bray_dist_cDNA ~ bact_sample_info_table_cDNA$soil, permutations = 9999)
+
+
+set.seed(777) #don't change this
+anova(betadisper(cDNA_bray_dist_cDNA, bact_sample_info_table_cDNA$month)) 
+adonis2(cDNA_bray_dist_cDNA ~ bact_sample_info_table_cDNA$month, permutations = 9999)
+```
+
+### DESeq2: PCoA Ordination
+
+Generally speaking, ordinations provide visualizations of sample-relatedness based on dimension reduction - this is where the 'multidimensional scaling' term (MDS) fits in. The 'dimensions' could be, for instance, whatever you measured in each sample, in our case counts of ASVs. Principle coordinates analysis (PCoA) is a type of multidimensional scaling that operates on dissimilarities or distances. In Pcoa you generate Eigen values from data, draw lines through that data that represents the most amount of variation. There are other ways to look at this same thing, including non-metric multidimensional scaling (NMDS).
+
+Here we're going to generate and plot our PCoA with phyloseq, because it is very convenient for doing such things. But because we're still doing beta diversity here, we want to use our transformed table. So we're going to make a phyloseq object with our DESeq2-transformed table and generate the PCoA from that.
+
+```{r}
+# making phyloseq object with transformed table
+bact_vst_count_phy <- otu_table(bact_vst_trans_counts_table, taxa_are_rows = TRUE)
+
+sample_info_table_bact_phy <- sample_data(bact_sample_info_table)
+
+bact_vst_physeq <- phyloseq(bact_vst_count_phy, sample_info_table_bact_phy)
+
+# generating and visualizing the PCoA with phyloseq
+bact_vst_pcoa <- ordinate(bact_vst_physeq, method = "PCoA", distance = "bray")
+
+bact_eigen_values <- bact_vst_pcoa$values$Eigenvalues # allows us to scale the axes according to their magnitude of separating apart the samples
+
+
+plot_ordination(bact_vst_physeq, bact_vst_pcoa, type="sample", color="replicate") +
+  labs(col="Samples") +
+  geom_point(size = 2) +
+  theme_bw() +
+  coord_fixed(sqrt(bact_eigen_values[2]/bact_eigen_values[1])) + ggtitle("PCoA")
+```
+
+### Rarefaction: Alternative route: rarefaction and NMDS
+
+Non-metric multidimensional scaling (NMDS):
+
+-   Different from PcoA in that in Pcoa you generate Eigen values from data, draw lines through that data that represents the most amount of variation.
+
+-   In NMDS, you tell the algorithm how many dimensions we want, which is always 2 since we are representing this on paper.
+
+-   NMDS is an optimization program that generally does a better job than pcoa since NMDS is a non-linear approach.
+
+-   metaMDS in the vegan package will repeat this algo 20 times, trying to find the smallest stress value, which can be thought of as the amount of distortion that happens when you take multidimentsional data and smush it into 2 dimensions
+
+    -   want to make sure you reach convergence after the 20 runs, if not, you can lower the set.seed value
+
+Here we want to compare the microbial communities our RBC June and October 16S rRNA amplicon sequencing data. We will be following along the @Riffomonas Project video (<https://www.youtube.com/watch?v=oLf0EpMJ4yA&t=10s>).
+
+We will take our count table that has not yet been normalized and rarefy to the lowest sequencing depth.
+
+```{r}
+sample_lookup <- read.csv("June_Oct_16S_MERGE_metadata.csv", header = TRUE)
+sample_lookup <- as.data.frame(sample_lookup)
+
+bact_count_table_t <- t(bact_count_table)
+
+bact_count_table_all <- bact_count_table_t %>%
+  as_tibble(rownames = "sample") %>%
+  pivot_longer(-sample) %>%
+  inner_join(., sample_lookup, by="sample") %>%
+  group_by(sample) %>%
+  summarize(N = sum(value)) %>%
+  arrange(N)
+```
+
+The results from this output tells us that the October riparian gDNA replicate 1 ("10RgDNA1") had the fewest total number of ASVs within it, at 116,838 total. Naturally, a sample with fewer total ASVs is going to have less abundance of everything and fewer representatives of commonly found ASVs. We can take this into account by either calculating relative abundances or by rarefying to the lowest number of ASVs, which in this case would be 116,838.
+
+Now that we have this value, we don't need it anymore, so we will make some changes to our tibble to simplify things like putting it into the wide format and giving it a name so we can work with it further.
+
+```{r}
+bact_tbl <- bact_count_table_t %>%
+    as_tibble(rownames = "sample") %>%
+    pivot_longer(-sample) %>%
+    inner_join(., sample_lookup, by="sample") %>%
+    group_by(sample) %>%
+    mutate(N = sum(value)) %>%
+    ungroup() %>%
+    select(-N) %>%
+    pivot_wider(names_from = "name", values_from = "value", values_fill = 0)
+
+bact_tbl
+```
+
+Make a separate table for our metadata and our ASV counts from our tibble.
+
+```{r}
+bact_metadata <- bact_tbl %>%
+  select(sample, month, soil, template, replicate, flux, latitude, longitude, soil.temp, monthsoil, color_month, color_soil)
+
+bact <- bact_tbl %>%
+  select(-month, -soil, -template, -replicate, -flux, -latitude, -longitude, -soil.temp, -monthsoil, -color_month, -color_soil) %>%
+  column_to_rownames("sample") 
+```
+
+Now we can make our distance matrix
+
+```{r}
+bact_dist <- avgdist(bact, sample = 116838)
+
+set.seed(777)
+bact_NMDS <- metaMDS(bact_dist) %>%
+  scores() %>%
+  as_tibble(rownames="sample")
+```
+
+Now that we have our NMDS coordinates for each sample, we can add back the metadata so that we can look at the ordination plot based on the different characteristics such as month and soil type.
+
+```{r message=TRUE, warning=TRUE}
+metadata_NMDS <- inner_join(bact_metadata, bact_NMDS)
+
+metadata_NMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=month, shape=soil)) +
+  geom_point(size=2) +
+  theme_bw() 
+
+# same NMDS plot with confidence ellipses
+metadata_NMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=month, shape=soil)) +
+  stat_ellipse(aes(x=NMDS1,y=NMDS2,color=template),level = 0.50) +
+  geom_point(size=2) +
+  theme_bw() 
+```
+
+```{r}
+# for editing theme
+my_theme <- theme_bw() +
+        theme(text=element_text(size = 12), 
+        axis.text.x=element_text(size=10, color = "black"), 
+        axis.text.y = element_text(size=10, color = "black"),
+        title = element_text(size = 10, color = "black"), 
+        legend.title=element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank()
+        )
+```
+
+```{r}
+# basic plot
+metadata_NMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=replicate)) +
+  geom_point(size=4) +
+  scale_y_continuous(n.breaks = 6) +
+  scale_x_continuous(n.breaks = 6) +
+  my_theme 
+
+# custom color plot
+fill_col = c("#b2182b", "#fb9a99", "#2166ac", "#a6cee3")
+
+NMDS_plot <- ggplot(data = metadata_NMDS, aes(x = NMDS1, y = NMDS2)) +
+  geom_point(aes(shape = template, fill = monthsoil),
+             size = 3, stroke = 1) + 
+  scale_shape_manual(values = c(24, 21)) + 
+  scale_y_continuous(n.breaks = 6) +
+  scale_x_continuous(n.breaks = 6) +
+  scale_fill_manual(values = c("#b2182b", "#fb9a99", "#2166ac", "#a6cee3")) +
+  my_theme +
+  guides(fill = guide_legend(override.aes = list(color = fill_col)))
+
+NMDS_plot
+```
+
+I think this version of the ordination plot (compared to PCoA) is showing better separation. Here we can see that there's two obvious clusters that form when we sort by month, whereas in the PCoA plot there's really not any obvious characteristic by which things are sorted. I think the PCoA accounts for more dimensions of variation, but we are not necessarily interested in going very deep, we just want to see two dimensions of variation, which is why I think NMDS is more appropriate.
+
+Another thing we can do with these ordination plots is to look at the centroids, or the most middle point among a group and see if those are different. We will first calculate the centroid for the soil, then for the month groups.
+
+```{r}
+centroid_soil <- metadata_NMDS %>%
+  group_by(soil) %>%
+  summarize(NMDS1=mean(NMDS1), NMDS2=mean(NMDS2))
+
+centroid_month <- metadata_NMDS %>%
+  group_by(month) %>%
+  summarize(NMDS1=mean(NMDS1), NMDS2=mean(NMDS2))
+```
+
+Now we can plot those centroids on our ordination plot
+
+```{r}
+metadata_NMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=month)) +
+  geom_point(size=2) +
+  theme_bw() +
+  geom_point(data=centroid_month, color="black") +
+   stat_ellipse(aes(x=NMDS1,y=NMDS2,color=month),level = 0.50)
+  
+```
+
+```{r}
+metadata_NMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=soil)) +
+  geom_point(size=2) +
+  theme_bw() +
+  geom_point(data=centroid_soil, color="black") +
+  stat_ellipse(aes(x=NMDS1,y=NMDS2,color=soil),level = 0.50)
+```
+
+Envfit function to fit environmental factors or vectorss onto an ordination. Resource: <https://jkzorz.github.io/2020/04/04/NMDS-extras.html>
+
+```{r}
+env <- bact_tbl %>%
+  select(sample, month, soil, template, flux, latitude, longitude, soil.temp) %>%
+  column_to_rownames("sample") 
+
+
+set.seed(777)
+nmds = metaMDS(bact_dist)
+
+
+# run envfit function with our environmental data frame
+en = envfit(nmds, env, permutations = 999, na.rm = TRUE)
+
+en
+```
+
+When we call the results of the envfit function, we get results that are split into **Vectors** and **Factors**, for your continuous and categorical variables respectively. For both vectors and factors, a table is shown that gives the variables as rows, and then gives their respective coordinates on the NMDS ordination in the NMDS1 and NMDS2 axes. If permutations \> 0, the significance of fitted vectors or factors is assessed using permutation of environmental variables.
+
+An explanation from the [**envfit**](https://www.rdocumentation.org/packages/vegan/versions/2.4-2/topics/envfit) description: "The printed output of continuous variables (vectors) gives the direction cosines which are the coordinates of the heads of unit length vectors. In plot these are scaled by their correlation (square root of the column r2) so that"weak" predictors have shorter arrows than "strong" predictors... ...Function vectorfit finds *directions in the ordination space towards which the environmental vectors change most rapidly and to which they have maximal correlations with the ordination configuration*. Function factorfit finds *averages of ordination scores for factor levels*."
+
+The way I interpret this is that the vectors act as a kind of "pseudo axis" within your plot. If you travel along your plot in that direction, you will see that your samples generally increase with respect to that variable. This of course is not a perfect relationship, which is where the r2 and signficance values come in to explain the strength of the association. Longer arrows, mean a stronger association. Because this relationship isn't always linear, the developers of envfit suggest that you could also use alternate methods to map important variables onto your data including point size or the ordisurf function.
+
+The centroid value for all the samples belonging to a certain category are plotted by the factor coordinates, which allows you to see how well samples from specific categories are grouping together (or not).
+
+We can plot both our NMDS and the envfit results using base R to see how the factors and vectors are plotted:
+
+```{r}
+plot(nmds)
+plot(en)
+```
+
+The envfit vectors and factors (blue) are overlaid on the original NMDS plot with samples as black points. The base R plot here is really difficult to read, easily overcrowded, and difficult to customize. I recommend using *ggplot2* to make nicer looking plots.
+
+In order to plot using *ggplot2*, you need to extract the appropriate information from the nmds and envfit results.
+
+For the NMDS output, use the following code to extract the sample coordinates in the NMDS ordination space. Then add columns from your original data that contain information that you would like to include in your plot. In this case I'm including the column "season"
+
+```{r}
+data.scores = as.data.frame(scores(nmds))
+data.scores$month = env$month
+data.scores$soil = env$soil
+```
+
+Extracting the required information from the envfit result is a bit more complicated. The envfit output contains information on the length of the segments for each variable. The segments are scaled to the r2 value, so that the environmental variables with a longer segment are more strongly correlated with the data than those with a shorter segment. You can extract this information with scores. Then these lengths are further scaled to fit the plot. This is done with a multiplier that is analysis specific, and can be accessed using the command *ordiArrowMul(en)*. Below I multiply the scores by this multiplier to keep the coordinates in the correct proportion.
+
+Because my data contained continuous and categorical environmental variables, I'm extracting the information from both separately using the "vectors" and "factors" options respectively.
+
+```{r}
+en_coord_cont = as.data.frame(scores(en, "vectors")) * ordiArrowMul(en)
+en_coord_cat = as.data.frame(scores(en, "factors")) * ordiArrowMul(en)
+```
+
+```{r}
+# First we will make a figure of just the nmds plot without the envfit variables:
+
+ggplot(data = data.scores, aes(x = NMDS1, y = NMDS2)) + 
+     geom_point(data = data.scores, aes(colour = month), 
+                size = 3, alpha = 0.5) + 
+     scale_colour_manual(values = c("orange", "steelblue")) + 
+     theme(axis.title = element_text(size = 10, face = "bold", 
+                                     colour = "grey30"), 
+     panel.background = element_blank(), 
+     panel.border = element_rect(fill = NA, colour = "grey30"), 
+     axis.ticks = element_blank(), axis.text = element_blank(), 
+     legend.key = element_blank(), 
+     legend.title = element_text(size = 10, face = "bold", 
+                                 colour = "grey30"), 
+     legend.text = element_text(size = 9, colour = "grey30")) +
+     labs(colour = "month")
+```
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data = data.scores, aes(x = NMDS1, y = NMDS2)) + 
+     geom_point(data = data.scores, aes(colour = month), 
+                size = 3, alpha = 0.5) + 
+     scale_colour_manual(values = c("orange", "steelblue"))  + 
+     geom_segment(aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2), 
+       data = en_coord_cont, size =1, alpha = 0.5, 
+       colour = "grey30") +
+     geom_point(data = en_coord_cat, aes(x = NMDS1, y = NMDS2), 
+       shape = "diamond", size = 4, alpha = 0.6, colour = "navy") +
+     geom_text(data = en_coord_cat, aes(x = NMDS1, y = NMDS2+0.04), 
+       label = row.names(en_coord_cat), colour = "navy", 
+       fontface = "bold") + 
+     geom_text(data = en_coord_cont, aes(x = NMDS1, y = NMDS2), 
+               colour = "grey30", fontface = "bold", 
+               label = row.names(en_coord_cont)) + 
+     theme(axis.title = element_text(size = 10, face = "bold", 
+                                     colour = "grey30"), 
+       panel.background = element_blank(), 
+       panel.border = element_rect(fill = NA, colour = "grey30"), 
+       axis.ticks = element_blank(), axis.text = element_blank(), 
+       legend.key = element_blank(), 
+       legend.title = element_text(size = 10, face = "bold", 
+                                   colour = "grey30"), 
+       legend.text = element_text(size = 9, colour = "grey30")) + 
+     labs(colour = "Month")
+```
+
+#### ANOSIM
+
+The ANOSIM test is similar to ANOVA but it uses a dissimilarity matrix (bact_dist in our case) as input instead of raw data. It is non-parametric, meaning it doesn't assume that our data is normally distributed or anything, so it is commonly used in microbial abundance data. Resource: [https://jkzorz.github.io/2019/06/11/ANOSIM-test.html](https://jkzorz.github.io/2019/06/11/ANOSIM-test.html#){.uri}
+
+```{r}
+anosim(bact_dist, bact_metadata$soil, permutations=999)
+anosim(bact_dist, bact_metadata$month, permutations=999)
+anosim(bact_dist, bact_metadata$template, permutations=999)
+anosim(bact_dist, bact_metadata$replicate, permutations=999)
+```
+
+### Rarefaction: Alternative route: Adonis
+
+Now we can use the statistical test from adonis (also called permanova) to see if there is a statistical difference between the months or the soil types. We generally run ANOVA first, which stands for Analysis of Variance. This test determines the differences between the means of two or more groups of treatments and can determine whether there are statistically different means between the groups.
+
+```{r}
+anova(betadisper(bact_dist, bact_metadata$month))
+adonis2(bact_dist~bact_metadata$month, permutations=999) # don't need to change the 999, this is the accepted number typically run for all datasets
+```
+
+There's a significant difference between all June samples and all October samples.
+
+```{r}
+anova(betadisper(bact_dist, bact_metadata$soil))
+
+adonis2(bact_dist~bact_metadata$soil, permutations=999)
+```
+
+There's a significant difference between all riparian samples and all upland samples.
+
+```{r}
+anova(betadisper(bact_dist, bact_metadata$template))
+
+adonis2(bact_dist~bact_metadata$template, permutations=999)
+```
+
+## Raw counts: Differential abundance analysis with DESeq2
+
+First, it's important to keep in mind that:
+
+Recovered 16S rRNA gene copy numbers do not equal organism abundance.
+
+That said, recovered 16S rRNA gene copy numbers do represent... well, numbers of recovered 16S rRNA gene copies. So long as you're interpreting them that way, and thinking of your system in the appropriate way, you can perform differential abundance testing to test for which representative sequences have significantly different copy-number counts between samples -- which can be useful information and guide the generation of hypotheses. One tool that can be used for this is DESeq2, which we used above to transform our count table for beta diversity plots.
+
+Now that we've found a statistical difference between the two months, this is one way we can try to find out which ASVs (and possibly which taxa) are contributing to that difference. If you are going to use DESeq2, be sure to carefully go over their thorough manual and other information you can find here, particularly this very informative page.
+
+We are going to take advantage of another phyloseq convenience, and use the phyloseq_to_deseq2 function to make our DESeq2 object.
+
+```{r}
+# first making a phyloseq object of non-transformed values (as that is what DESeq2 operates on
+bact_count_phy <- otu_table(bact_count_table, taxa_are_rows=T)
+bact_count_physeq <- phyloseq(bact_count_phy, sample_info_table_bact_phy)
+  
+# now converting our phyloseq object to a deseq object
+bact_deseq <- phyloseq_to_deseq2(bact_count_physeq, ~month)
+
+# and running deseq standard analysis:
+bact_deseq <- DESeq(bact_deseq)
+```
+
+The DESeq() function is doing a lot of things. Be sure you look into it and understand conceptually what is going on here, it is well detailed in their manual.
+
+We can now access the results. In our setup here, we only have 2 groups, so what is being contrasted is pretty straightforward. Normally, you will tell the results() function which groups you would like to be contrasted (all were done at the DESeq2() function call, but we would parse those initial results by specifying when we pull them out with the results() function). We will also provide the p-value we wish to use to filter the results with later, as recommended by the ?results help page, with the "alpha" argument.
+
+```{r}
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about
+deseq_res_June_vs_Oct <- results(bact_deseq, alpha=0.01, contrast=c("month", "June", "October"))
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_June_vs_Oct) 
+```
+
+This tells us out of the 27,543 ASVs, with adj-p \< 0.01, there are 354 increased when comparing June to October, and 291 decreased. "Decreased" in this case means that at a lower count abundance in the June samples than in the October samples, and "increased" means greater proportion in June than in October.
+
+Before we start sorting this table more, let's save it in its entirety as a CSV.
+
+```{r}
+write.csv(deseq_res_June_vs_Oct, "sig_table_month_all.csv")
+```
+
+Now we can subset this table to only include those that pass our specified significance level (padj \< 0.01).
+
+```{r}
+sigtab_res_deseq_June_vs_Oct <- deseq_res_June_vs_Oct[which(deseq_res_June_vs_Oct$padj < 0.01), ]
+
+# now we can see this table only contains those we consider significantly differentially abundant
+summary(sigtab_res_deseq_June_vs_Oct) 
+```
+
+```{r}
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+sigtab_deseq_June_vs_Oct_with_tax <- cbind(as(sigtab_res_deseq_June_vs_Oct, "data.frame"), as(tax_table(ASV_physeq)[row.names(sigtab_res_deseq_June_vs_Oct), ], "matrix"))
+
+# and now let's sort that table by the baseMean column
+sigtab_deseq_June_vs_Oct_with_tax <- sigtab_deseq_June_vs_Oct_with_tax[order(sigtab_deseq_June_vs_Oct_with_tax$baseMean, decreasing=T), ]
+```
+
+Interpretation: This puts a sequence derived from a Burkholderia genus at the second to highest (first is unclassified) that was detected in \~18 log2fold greater abundance in the June samples than in the October samples. No methanotrophs. Some questions that might be good to ask is the abundance of the most prevalent June species in other areas, whether we'd expect to see more Burkholderia in warm months with hotter soil temperatures, for example.
+
+Let's save this table so we can look at it later
+
+```{r}
+sig_tab_month <- sigtab_deseq_June_vs_Oct_with_tax[order(sigtab_deseq_June_vs_Oct_with_tax$baseMean, decreasing=T), ]
+write.csv(sig_tab_month, "sig_table_month.csv")
+```
+
+Now lets do the DESeq2 with comparing the two soil types.
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by soil
+bact_deseq_soil <- phyloseq_to_deseq2(bact_count_physeq, ~soil)
+
+# and running deseq standard analysis:
+bact_deseq_soil <- DESeq(bact_deseq_soil)
+
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about
+deseq_res_riparian_vs_upland <- results(bact_deseq_soil, alpha=0.01, contrast=c("soil", "riparian", "upland"))
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_riparian_vs_upland) 
+
+# save the entire table as a .csv
+write.csv(deseq_res_riparian_vs_upland, "sig_table_soil_all.csv")
+
+# let's subset this table to only include these that pass our specified significance level
+sigtab_res_deseq_riparian_vs_upland <- deseq_res_riparian_vs_upland[which(deseq_res_riparian_vs_upland$padj < 0.01), ]
+
+# now we can see this table only contains those we consider significantly differentially abundant
+summary(sigtab_res_deseq_riparian_vs_upland)
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+sigtab_deseq_riparian_vs_upland_with_tax <- cbind(as(sigtab_res_deseq_riparian_vs_upland, "data.frame"), as(tax_table(ASV_physeq)[row.names(sigtab_res_deseq_riparian_vs_upland), ], "matrix"))
+
+# and now let's sort that table by the baseMean column
+sigtab_deseq_riparian_vs_upland_with_tax <- sigtab_deseq_riparian_vs_upland_with_tax[order(sigtab_deseq_riparian_vs_upland_with_tax$baseMean, decreasing=T), ]
+
+# save the subsetted table of only our significant ASVs as a table
+sig_tab_soil <- sigtab_deseq_riparian_vs_upland_with_tax[order(sigtab_deseq_riparian_vs_upland_with_tax$baseMean, decreasing=T), ]
+
+write.csv(sig_tab_soil, "sig_table_soil.csv")
+
+```
+
+Interpretation: again, no methanotrophs but there's two Methyloversatilis and a Methylophilus. The types of bacteria that are significantly different in the riparian vs. upland appear to be a different set than the ones that are significantly different in the June vs. October.
+
+I think these tables are interesting but I'm not sure what to do with them yet. I wonder if a volcano plot would be useful in visualizing this.
+
+#### Volcano plot of June vs. October
+
+First I need to assign taxa to my sig_table_month_all.csv that I created
+
+```{r}
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+sigtab_deseq_June_vs_Oct_with_tax_all <- cbind(as(deseq_res_June_vs_Oct, "data.frame"), as(tax_table(ASV_physeq)[row.names(deseq_res_June_vs_Oct), ], "matrix"))
+
+head(sigtab_deseq_June_vs_Oct_with_tax_all)
+
+write.csv(sigtab_deseq_June_vs_Oct_with_tax_all, "sig_table_month_all_taxa.csv")
+
+# we have to remove the NA's that are present in the log2FC and the padj columns, but we also have NA's that are "acceptable" in the taxonomy rows. We have to use the pre-merged table of stats and figure out a way to add in the taxa as labels in a later step
+deseq_res_June_vs_Oct_df <- as.data.frame(deseq_res_June_vs_Oct)
+JO_df <- deseq_res_June_vs_Oct_df[complete.cases(deseq_res_June_vs_Oct_df), ]
+
+```
+
+```{r}
+ggplot(data= JO_df, aes(x=log2FoldChange, y=-log10(padj))) + 
+  geom_point() + theme_minimal() + 
+  geom_vline(xintercept=c(-1, 1), col="red") +
+  geom_hline(yintercept=-log10(0.001), col="red")
+
+```
+
+```{r}
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+JO_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+JO_df$diffexpressed[JO_df$log2FoldChange > 15 & JO_df$padj < 0.00000001] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+JO_df$diffexpressed[JO_df$log2FoldChange < -15 & JO_df$padj < 0.00000001] <- "DOWN"
+
+
+
+ggplot(data = JO_df, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+  geom_vline(xintercept = c(-15, 15), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.00000001), col = "black", 
+             linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
+                     labels = c("downregulated", "not significant", 
+                                "upregulated")) + 
+  coord_cartesian(ylim = c(0, 50), xlim = c(-30,30)) + 
+  labs(color = 'June vs. October', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           ))
+
+```
+
+I'm not sure where to go from here but maybe I'll come back to this.
+
+### gDNA and cDNA separated
+
+#### gDNA DESeq2 analysis
+
+Starting with making a table of only our gDNA counts table
+
+```{r}
+# remove rows that contain the string "cDNA" in the column name, leaving only gDNA samples
+bact_count_table_g <- bact_count_table %>% select(-contains("cDNA"))
+
+# modifying our metadata table to contain only information about gDNA samples
+sample_info_table_bact_phy_t <- as.data.frame(t(sample_info_table_bact_phy))
+
+sample_info_table_bact_phy_g <- t(sample_info_table_bact_phy_t %>% select(-contains("cDNA")))
+```
+
+Continue with making a phyloseq object by combining the subsetted counts table and the subsetted metadata table.
+
+```{r}
+# making a phyloseq object of non-transformed values (as that is what DESeq2 operates on
+bact_count_physeq_g <- 
+  phyloseq(sample_data(as.data.frame(sample_info_table_bact_phy_g)), 
+           otu_table(as.matrix(bact_count_table_g),    
+                     taxa_are_rows = TRUE))
+```
+
+##### June vs October month
+
+Now run the DESeq2 step using the month as our comparison.
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by month
+bact_deseq_month_g <- phyloseq_to_deseq2(bact_count_physeq_g, ~month)
+
+# and running deseq standard analysis:
+bact_deseq_month_g <- DESeq(bact_deseq_month_g)
+
+
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about
+deseq_res_June_vs_Oct_g <- results(bact_deseq_month_g, alpha=0.01, contrast=c("month", "June", "October"))
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_June_vs_Oct_g) 
+
+# save the entire table as a .csv
+write.csv(deseq_res_June_vs_Oct_g, "sig_table_month_gDNA_all.csv")
+
+# let's subset this table to only include these that pass our specified significance level
+sigtab_res_deseq_June_vs_Oct_g <- deseq_res_June_vs_Oct_g[which(deseq_res_June_vs_Oct_g$padj < 0.01), ]
+
+# now we can see this table only contains those we consider significantly differentially abundant
+summary(sigtab_res_deseq_June_vs_Oct_g)
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+sigtab_res_deseq_June_vs_Oct_g_with_tax <- cbind(as(sigtab_res_deseq_June_vs_Oct_g, "data.frame"), as(tax_table(ASV_physeq)[row.names(sigtab_res_deseq_June_vs_Oct_g), ], "matrix"))
+
+# and now let's sort that table by the baseMean column
+sigtab_res_deseq_June_vs_Oct_g_with_tax <- sigtab_res_deseq_June_vs_Oct_g_with_tax[order(sigtab_res_deseq_June_vs_Oct_g_with_tax$baseMean, decreasing=T), ]
+
+# save the subsetted table of only our significant ASVs as a table
+sig_tab_month_g <- sigtab_res_deseq_June_vs_Oct_g_with_tax[order(sigtab_res_deseq_June_vs_Oct_g_with_tax$baseMean, decreasing=T), ]
+
+write.csv(sig_tab_month_g, "sig_table_month_gDNA.csv")
+```
+
+One Methylotenera and one Methyloversatilis.
+
+```{r}
+deseq_res_June_vs_Oct_g_df <- as.data.frame(deseq_res_June_vs_Oct_g)
+JO_g_df <- deseq_res_June_vs_Oct_g_df[complete.cases(deseq_res_June_vs_Oct_g_df), ]
+
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+JO_g_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+JO_g_df$diffexpressed[JO_g_df$log2FoldChange > 9 & JO_g_df$padj < 0.01] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+JO_g_df$diffexpressed[JO_g_df$log2FoldChange < -9 & JO_g_df$padj < 0.01] <- "DOWN"
+
+
+# plot a volcano plot
+ggplot(data = JO_g_df, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+  geom_vline(xintercept = c(-5, 5), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.01), col = "black", 
+             linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
+                     labels = c("higher in Oct", "not significant", 
+                                "higher in June")) + 
+  coord_cartesian(ylim = c(0, 20)) + 
+  labs(color = 'gDNA: June vs. October', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           ))
+```
+
+```{r}
+# combine dataframe with significant ASVs with the taxonomy of the ASVs
+JO_g_df_with_tax <- cbind(as(JO_g_df, "data.frame"), as(tax_table(ASV_physeq)[row.names(JO_g_df), ], "matrix"))
+
+write.csv(JO_g_df_with_tax, "sig_table_month_gDNA_tax.csv")
+```
+
+To address the requirement of labeling each ASV with the lowest available taxonomic classification for your plot, starting with the genus and moving up to higher levels as needed, you can create a new column in your dataframe that determines the lowest available taxonomic classification for each ASV. Here's how you can do it in R:
+1.Assuming your dataframe is named df and contains columns for each taxonomic rank (e.g., Kingdom, Phylum, Class, Order, Family, Genus, Species), you will iterate through each row and check from Genus upwards to Kingdom to find the lowest defined taxonomic rank.
+2. Create a new column in df that will hold the label for plotting, based on the lowest available taxonomic classification.
+```{r}
+# Function to find the lowest available taxonomic classification with prefix
+getLowestTaxaWithPrefix <- function(row) {
+  # Define the order of taxonomic levels from lowest to highest with their prefixes
+  levels <- list(Genus = "g", Family = "f", Order = "o", Class = "c", Phylum = "p", Kingdom = "k")
+  
+  # Iterate through the levels
+  for (level in names(levels)) {
+    # If the taxonomic level is not empty or NA, return it with prefix
+    if (!is.na(row[level]) && row[level] != "") {
+      return(paste0(levels[[level]], "_", row[level]))
+    }
+  }
+  # Return NA if no taxonomic level is found (shouldn't happen if data is complete)
+  return(NA)
+}
+
+# Apply the updated function to each row to create a new column with the lowest taxonomic classification and prefix
+JO_g_df_with_tax$LowestTaxaLabelWithPrefix <- apply(JO_g_df_with_tax, 1, getLowestTaxaWithPrefix)
+```
+
+Option to change the log2FC and pvalue cutoffs
+```{r}
+# add a column of NAs
+JO_g_df_with_tax$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+JO_g_df_with_tax$diffexpressed[JO_g_df_with_tax$log2FoldChange > 5 & JO_g_df_with_tax$padj < 0.0001] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+JO_g_df_with_tax$diffexpressed[JO_g_df_with_tax$log2FoldChange < -5 & JO_g_df_with_tax$padj < 0.0001] <- "DOWN"
+```
+
+
+Showing the same data but in a different way
+```{r}
+# make table only with UP and DOWN taxa
+JO_g_df_with_tax_filtered <- subset(JO_g_df_with_tax, diffexpressed != "NO")
+
+# sort the data based on the Log2FC values to arrange the taxa from highest to lowest fold change
+JO_g_df_with_tax_sorted <- JO_g_df_with_tax_filtered[order(-JO_g_df_with_tax_filtered$log2FoldChange),]
+```
+
+To ensure that each ASV with the same lowest taxa label is shown individually in your plot, you can concatenate a unique identifier (e.g., the ASV number or row number) with the LowestTaxaLabelWithPrefix. This will make each label unique, allowing individual representation in the plot. Here's how you can modify your dataframe to include this unique identifier in the labels:
+```{r}
+# Add a unique identifier to each LowestTaxaLabelWithPrefix
+JO_g_df_with_tax_sorted$UniqueLowestTaxaLabel <- paste(JO_g_df_with_tax_sorted$LowestTaxaLabelWithPrefix, "_", rownames(JO_g_df_with_tax_sorted), sep = "")
+
+# First, ensure UniqueLowestTaxaLabel is a factor
+JO_g_df_with_tax_sorted$UniqueLowestTaxaLabel <- factor(JO_g_df_with_tax_sorted$UniqueLowestTaxaLabel)
+
+# Reorder UniqueLowestTaxaLabel based on Log2FoldChange
+JO_g_df_with_tax_sorted <- JO_g_df_with_tax_sorted %>%
+  mutate(UniqueLowestTaxaLabel = reorder(UniqueLowestTaxaLabel, log2FoldChange, FUN = function(x)-mean(x)))
+
+# Remove rows that are only identified to the phylum or kingdom level, and remove rows with no taxa ("NA")
+JO_g_df_with_tax_abbrev <- JO_g_df_with_tax_sorted %>%
+  filter(!grepl("^k_", UniqueLowestTaxaLabel) & !grepl("^p_", UniqueLowestTaxaLabel) & !grepl("NA", UniqueLowestTaxaLabel))
+
+# remove "ASV_###" identifier for a cleaner look to the plot
+# Extract the taxonomic part before the unique identifier
+JO_g_df_with_tax_abbrev$SimplifiedLabel <- gsub("_ASV_\\d+$", "", JO_g_df_with_tax_abbrev$UniqueLowestTaxaLabel)
+
+# Add a unique numeric ID for each row to differentiate ASVs with the same label
+JO_g_df_with_tax_abbrev$ID <- seq_along(JO_g_df_with_tax_abbrev$SimplifiedLabel)
+
+# Combine the simplified label with the ID for plotting but set the aesthetic to only display the simplified label
+JO_g_df_with_tax_abbrev$PlotLabel <- factor(paste(JO_g_df_with_tax_abbrev$SimplifiedLabel, JO_g_df_with_tax_abbrev$ID, sep = "_"), levels = unique(paste(JO_g_df_with_tax_abbrev$SimplifiedLabel, JO_g_df_with_tax_abbrev$ID, sep = "_")))
+```
+
+```{r}
+ggplot(JO_g_df_with_tax_abbrev, aes(x = PlotLabel, y = log2FoldChange)) +
+  geom_bar(stat = "identity", aes(fill = log2FoldChange > 0), width = 0.7) +
+  scale_x_discrete(labels = JO_g_df_with_tax_abbrev$SimplifiedLabel) + # Use simplified labels for x-axis text
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "none") 
+
+```
+
+```{r}
+# Manually define a diverging, colorblind-safe color palette
+# Example colors here are chosen for demonstration; adjust as needed based on your number of phyla
+color_palette <- c("Acidobacteria" = "#1b9e77", "Actinobacteria" = "#d95f02", "Bacteroidetes" = "#7570b3", 
+                   "Proteobacteria" = "#e7298a", "Planctomycetes" = "#66a61e", "Plantae" = "#e6ab02", 
+                   "Gemmatimonadetes" = "#a6761d", "Verrucomicrobia" = "#666666")
+
+JO_g_plot <- ggplot(JO_g_df_with_tax_abbrev, aes(x = factor(ID), y = log2FoldChange, fill = Phylum)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_x_discrete(labels = JO_g_df_with_tax_abbrev$SimplifiedLabel) + # Use simplified labels for x-axis text
+  coord_flip() +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "right") +
+    scale_fill_manual(values = color_palette)
+
+JO_g_plot
+```
+
+
+##### Riparian vs Upland soil
+
+Now looking at the comparisons between the two soil types for gDNA samples.
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by soil
+bact_deseq_soil_g <- phyloseq_to_deseq2(bact_count_physeq_g, ~soil)
+
+# and running deseq standard analysis:
+bact_deseq_soil_g <- DESeq2::DESeq(bact_deseq_soil_g)
+
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about
+deseq_res_rip_vs_up_g <- results(bact_deseq_soil_g, alpha=0.01, contrast=c("soil", "riparian", "upland"))
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_rip_vs_up_g) 
+
+# save the entire table as a .csv
+write.csv(deseq_res_rip_vs_up_g, "sig_table_soil_gDNA_all.csv")
+
+# let's subset this table to only include these that pass our specified significance level
+sigtab_res_deseq_rip_vs_up_g <- deseq_res_rip_vs_up_g[which(deseq_res_rip_vs_up_g$padj < 0.01), ]
+
+# now we can see this table only contains those we consider significantly differentially abundant
+summary(sigtab_res_deseq_rip_vs_up_g)
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+sigtab_res_deseq_rip_vs_up_g_with_tax <- cbind(as(sigtab_res_deseq_rip_vs_up_g, "data.frame"), as(tax_table(ASV_physeq)[row.names(sigtab_res_deseq_rip_vs_up_g), ], "matrix"))
+
+# and now let's sort that table by the baseMean column
+sigtab_res_deseq_rip_vs_up_g_with_tax <- sigtab_res_deseq_rip_vs_up_g_with_tax[order(sigtab_res_deseq_rip_vs_up_g_with_tax$baseMean, decreasing=T), ]
+
+# save the subsetted table of only our significant ASVs as a table
+sig_tab_soil_g <- sigtab_res_deseq_rip_vs_up_g_with_tax[order(sigtab_res_deseq_rip_vs_up_g_with_tax$baseMean, decreasing=T), ]
+
+write.csv(sig_tab_soil_g, "sig_table_soil_gDNA.csv")
+```
+
+Within the significant table sig_tab_soil_g, there are two Methyloversatilis ASVs and one Methylophilus ASV.
+
+```{r}
+deseq_res_rip_vs_up_g_df <- as.data.frame(deseq_res_rip_vs_up_g)
+RU_g_df <- deseq_res_rip_vs_up_g_df[complete.cases(deseq_res_rip_vs_up_g_df), ]
+
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+RU_g_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+RU_g_df$diffexpressed[RU_g_df$log2FoldChange > 10 & RU_g_df$padj < 0.000001] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+RU_g_df$diffexpressed[RU_g_df$log2FoldChange < -10 & RU_g_df$padj < 0.000001] <- "DOWN"
+
+
+# plot a volcano plot
+ggplot(data = RU_g_df, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+  geom_vline(xintercept = c(-10, 10), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.000001), col = "black", 
+             linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
+                     labels = c("higher in upland", "not significant", 
+                                "higher in riparian")) + 
+  coord_cartesian(ylim = c(0, 20)) + 
+  labs(color = 'gDNA: Riparian vs. Upland', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           ))
+```
+
+```{r}
+# combine dataframe with significant ASVs with the taxonomy of the ASVs
+RU_g_df_with_tax <- cbind(as(RU_g_df, "data.frame"), as(tax_table(ASV_physeq)[row.names(RU_g_df), ], "matrix"))
+write.csv(RU_g_df_with_tax, "sig_table_soil_gDNA_tax.csv")
+```
+
+To address the requirement of labeling each ASV with the lowest available taxonomic classification for your plot, starting with the genus and moving up to higher levels as needed, you can create a new column in your dataframe that determines the lowest available taxonomic classification for each ASV. Here's how you can do it in R:
+1.Assuming your dataframe is named df and contains columns for each taxonomic rank (e.g., Kingdom, Phylum, Class, Order, Family, Genus, Species), you will iterate through each row and check from Genus upwards to Kingdom to find the lowest defined taxonomic rank.
+2. Create a new column in df that will hold the label for plotting, based on the lowest available taxonomic classification.
+```{r}
+# Function to find the lowest available taxonomic classification with prefix
+getLowestTaxaWithPrefix <- function(row) {
+  # Define the order of taxonomic levels from lowest to highest with their prefixes
+  levels <- list(Genus = "g", Family = "f", Order = "o", Class = "c", Phylum = "p", Kingdom = "k")
+  
+  # Iterate through the levels
+  for (level in names(levels)) {
+    # If the taxonomic level is not empty or NA, return it with prefix
+    if (!is.na(row[level]) && row[level] != "") {
+      return(paste0(levels[[level]], "_", row[level]))
+    }
+  }
+  # Return NA if no taxonomic level is found (shouldn't happen if data is complete)
+  return(NA)
+}
+
+# Apply the updated function to each row to create a new column with the lowest taxonomic classification and prefix
+RU_g_df_with_tax$LowestTaxaLabelWithPrefix <- apply(RU_g_df_with_tax, 1, getLowestTaxaWithPrefix)
+```
+
+Option to change the log2FC and pvalue cutoffs
+```{r}
+# add a column of NAs
+RU_g_df_with_tax$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+RU_g_df_with_tax$diffexpressed[RU_g_df_with_tax$log2FoldChange > 5 & RU_g_df_with_tax$padj < 0.0001] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+RU_g_df_with_tax$diffexpressed[RU_g_df_with_tax$log2FoldChange < -5 & RU_g_df_with_tax$padj < 0.0001] <- "DOWN"
+```
+
+
+Showing the same data but in a different way
+```{r}
+# make table only with UP and DOWN taxa
+RU_g_df_with_tax_filtered <- subset(RU_g_df_with_tax, diffexpressed != "NO")
+
+# sort the data based on the Log2FC values to arrange the taxa from highest to lowest fold change
+RU_g_df_with_tax_sorted <- RU_g_df_with_tax_filtered[order(-RU_g_df_with_tax_filtered$log2FoldChange),]
+
+# Add a unique identifier to each LowestTaxaLabelWithPrefix
+RU_g_df_with_tax_sorted$UniqueLowestTaxaLabel <- paste(RU_g_df_with_tax_sorted$LowestTaxaLabelWithPrefix, "_", rownames(RU_g_df_with_tax_sorted), sep = "")
+
+# First, ensure UniqueLowestTaxaLabel is a factor
+RU_g_df_with_tax_sorted$UniqueLowestTaxaLabel <- factor(RU_g_df_with_tax_sorted$UniqueLowestTaxaLabel)
+
+# Reorder UniqueLowestTaxaLabel based on Log2FoldChange
+RU_g_df_with_tax_sorted <- RU_g_df_with_tax_sorted %>%
+  mutate(UniqueLowestTaxaLabel = reorder(UniqueLowestTaxaLabel, log2FoldChange, FUN = function(x)-mean(x)))
+
+# remove rows from data frame that are only resolved to kingdom, phylum, or NA level
+RU_g_df_with_tax_abbrev <- RU_g_df_with_tax_sorted %>%
+  filter(!grepl("^k_", UniqueLowestTaxaLabel) & !grepl("^p_", UniqueLowestTaxaLabel) & !grepl("NA", UniqueLowestTaxaLabel))
+
+# remove ASV_### identifier from labels
+# Extract the taxonomic part before the unique identifier
+RU_g_df_with_tax_abbrev$SimplifiedLabel <- gsub("_ASV_\\d+$", "", RU_g_df_with_tax_abbrev$UniqueLowestTaxaLabel)
+
+# Add a unique numeric ID for each row to differentiate ASVs with the same label
+RU_g_df_with_tax_abbrev$ID <- seq_along(RU_g_df_with_tax_abbrev$SimplifiedLabel)
+
+# Combine the simplified label with the ID for plotting but set the aesthetic to only display the simplified label
+RU_g_df_with_tax_abbrev$PlotLabel <- factor(paste(RU_g_df_with_tax_abbrev$SimplifiedLabel, RU_g_df_with_tax_abbrev$ID, sep = "_"), levels = unique(paste(RU_g_df_with_tax_abbrev$SimplifiedLabel, RU_g_df_with_tax_abbrev$ID, sep = "_")))
+```
+
+
+```{r}
+ggplot(RU_g_df_with_tax_abbrev, aes(x = PlotLabel, y = log2FoldChange)) +
+  geom_bar(stat = "identity", aes(fill = log2FoldChange > 0), width = 0.7) +
+  scale_x_discrete(labels = RU_g_df_with_tax_abbrev$SimplifiedLabel) + # Use simplified labels for x-axis text
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "none") 
+
+```
+
+```{r}
+# Manually define a diverging, colorblind-safe color palette
+# Example colors here are chosen for demonstration; adjust as needed based on your number of phyla
+color_palette <- c("Acidobacteria" = "#1b9e77", "Actinobacteria" = "#d95f02", "Bacteroidetes" = "#7570b3", 
+                   "Proteobacteria" = "#e7298a", "Planctomycetes" = "#66a61e", "Plantae" = "#e6ab02", 
+                   "Gemmatimonadetes" = "#a6761d", "Verrucomicrobia" = "#666666")
+
+RU_g_plot <- ggplot(RU_g_df_with_tax_abbrev, aes(x = factor(ID), y = log2FoldChange, fill = Phylum)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_x_discrete(labels = RU_g_df_with_tax_abbrev$SimplifiedLabel) + # Use simplified labels for x-axis text
+  coord_flip() +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "right") +
+    scale_fill_manual(values = color_palette)
+
+RU_g_plot
+```
+
+#### cDNA DESeq2 analysis
+
+Starting with making a table of only our cDNA counts table
+
+```{r}
+# remove rows that contain the string "gDNA" in the column name, leaving only cDNA samples
+bact_count_table_c <- bact_count_table %>% select(-contains("gDNA"))
+
+# modifying our metadata table to contain only information about gDNA samples
+sample_info_table_bact_phy_t <- as.data.frame(t(sample_info_table_bact_phy))  
+
+sample_info_table_bact_phy_c <- t(sample_info_table_bact_phy_t %>% select(-contains("gDNA")))
+```
+
+Continue with making a phyloseq object by combining the subsetted counts table and the subsetted metadata table.
+
+```{r}
+# making a phyloseq object of non-transformed values (as that is what DESeq2 operates on
+bact_count_physeq_c <- phyloseq(sample_data(as.data.frame(sample_info_table_bact_phy_c)), 
+                                otu_table(as.matrix(bact_count_table_c), taxa_are_rows = TRUE))
+```
+
+##### June vs October month cDNA
+
+Now run the DESeq2 step using the month as our comparison.
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by month
+bact_deseq_month_c <- phyloseq_to_deseq2(bact_count_physeq_c, ~month)  
+# and running deseq standard analysis: 
+bact_deseq_month_c <- DESeq2::DESeq(bact_deseq_month_c)  
+
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about 
+deseq_res_June_vs_Oct_c <- results(bact_deseq_month_c, alpha=0.01, contrast=c("month", "June", "October"))  
+
+# we can get a glimpse at what this table currently holds with the summary command 
+summary(deseq_res_June_vs_Oct_c)   
+
+# save the entire table as a .csv 
+write.csv(deseq_res_June_vs_Oct_c, "sig_table_month_cDNA_all.csv")  
+
+# let's subset this table to only include these that pass our specified significance level 
+sigtab_res_deseq_June_vs_Oct_c <- deseq_res_June_vs_Oct_c[which(deseq_res_June_vs_Oct_c$padj < 0.01), ]  
+
+# now we can see this table only contains those we consider significantly differentially abundant 
+summary(sigtab_res_deseq_June_vs_Oct_c)  
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+sigtab_res_deseq_June_vs_Oct_c_with_tax <- cbind(as(sigtab_res_deseq_June_vs_Oct_c, "data.frame"), as(tax_table(ASV_physeq)[row.names(sigtab_res_deseq_June_vs_Oct_c), ], "matrix")) 
+# and now let's sort that table by the baseMean column
+sigtab_res_deseq_June_vs_Oct_c_with_tax <- sigtab_res_deseq_June_vs_Oct_c_with_tax[order(sigtab_res_deseq_June_vs_Oct_c_with_tax$baseMean, decreasing=T), ] 
+
+# save the subsetted table of only our significant ASVs as a table
+sig_tab_month_c <- sigtab_res_deseq_June_vs_Oct_c_with_tax[order(sigtab_res_deseq_June_vs_Oct_c_with_tax$baseMean, decreasing=T), ]
+
+write.csv(sig_tab_month_c, "sig_table_month_cDNA.csv")
+```
+
+One Methylotenera.
+
+```{r}
+deseq_res_June_vs_Oct_c_df <- as.data.frame(deseq_res_June_vs_Oct_c)
+JO_c_df <- deseq_res_June_vs_Oct_c_df[complete.cases(deseq_res_June_vs_Oct_c_df), ]
+
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+JO_c_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+JO_c_df$diffexpressed[JO_c_df$log2FoldChange > 10 & JO_c_df$padj < 0.000001] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+JO_c_df$diffexpressed[JO_c_df$log2FoldChange < -10 & JO_c_df$padj < 0.000001] <- "DOWN"
+
+
+# plot a volcano plot
+ggplot(data = JO_c_df, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+  geom_vline(xintercept = c(-10, 10), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.000001), col = "black", 
+             linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
+                     labels = c("higher in Oct", "not significant", 
+                                "higher in June")) + 
+    labs(color = 'cDNA: June vs. October', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           ))
+```
+
+```{r}
+# combine dataframe with significant ASVs with the taxonomy of the ASVs
+JO_c_df_with_tax <- cbind(as(JO_c_df, "data.frame"), as(tax_table(ASV_physeq)[row.names(JO_c_df), ], "matrix"))
+
+write.csv(JO_c_df_with_tax, "sig_table_month_cDNA_tax.csv")
+```
+
+To address the requirement of labeling each ASV with the lowest available taxonomic classification for your plot, starting with the genus and moving up to higher levels as needed, you can create a new column in your dataframe that determines the lowest available taxonomic classification for each ASV. Here's how you can do it in R:
+1.Assuming your dataframe is named df and contains columns for each taxonomic rank (e.g., Kingdom, Phylum, Class, Order, Family, Genus, Species), you will iterate through each row and check from Genus upwards to Kingdom to find the lowest defined taxonomic rank.
+2. Create a new column in df that will hold the label for plotting, based on the lowest available taxonomic classification.
+```{r}
+# Function to find the lowest available taxonomic classification with prefix
+getLowestTaxaWithPrefix <- function(row) {
+  # Define the order of taxonomic levels from lowest to highest with their prefixes
+  levels <- list(Genus = "g", Family = "f", Order = "o", Class = "c", Phylum = "p", Kingdom = "k")
+  
+  # Iterate through the levels
+  for (level in names(levels)) {
+    # If the taxonomic level is not empty or NA, return it with prefix
+    if (!is.na(row[level]) && row[level] != "") {
+      return(paste0(levels[[level]], "_", row[level]))
+    }
+  }
+  # Return NA if no taxonomic level is found (shouldn't happen if data is complete)
+  return(NA)
+}
+
+# Apply the updated function to each row to create a new column with the lowest taxonomic classification and prefix
+JO_c_df_with_tax$LowestTaxaLabelWithPrefix <- apply(JO_c_df_with_tax, 1, getLowestTaxaWithPrefix)
+```
+
+Option to change the log2FC and pvalue cutoffs
+```{r}
+# add a column of NAs
+JO_c_df_with_tax$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+JO_c_df_with_tax$diffexpressed[JO_c_df_with_tax$log2FoldChange > 5 & JO_c_df_with_tax$padj < 0.0001] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+JO_c_df_with_tax$diffexpressed[JO_c_df_with_tax$log2FoldChange < -5 & JO_c_df_with_tax$padj < 0.0001] <- "DOWN"
+```
+
+
+Showing the same data but in a different way
+```{r}
+# make table only with UP and DOWN taxa
+JO_c_df_with_tax_filtered <- subset(JO_c_df_with_tax, diffexpressed != "NO")
+
+# sort the data based on the Log2FC values to arrange the taxa from highest to lowest fold change
+JO_c_df_with_tax_sorted <- JO_c_df_with_tax_filtered[order(-JO_c_df_with_tax_filtered$log2FoldChange),]
+
+# Add a unique identifier to each LowestTaxaLabelWithPrefix
+JO_c_df_with_tax_sorted$UniqueLowestTaxaLabel <- paste(JO_c_df_with_tax_sorted$LowestTaxaLabelWithPrefix, "_", rownames(JO_c_df_with_tax_sorted), sep = "")
+
+# First, ensure UniqueLowestTaxaLabel is a factor
+JO_c_df_with_tax_sorted$UniqueLowestTaxaLabel <- factor(JO_c_df_with_tax_sorted$UniqueLowestTaxaLabel)
+
+# Reorder UniqueLowestTaxaLabel based on Log2FoldChange
+JO_c_df_with_tax_sorted <- JO_c_df_with_tax_sorted %>%
+  mutate(UniqueLowestTaxaLabel = reorder(UniqueLowestTaxaLabel, log2FoldChange, FUN = function(x)-mean(x)))
+
+# remove rows that are unresolved or only to the kingdom/phylum level
+JO_c_df_with_tax_abbrev <- JO_c_df_with_tax_sorted %>%
+  filter(!grepl("^k_", UniqueLowestTaxaLabel) & !grepl("^p_", UniqueLowestTaxaLabel) & !grepl("NA", UniqueLowestTaxaLabel))
+
+# remove ASV_### identifier from labels
+# Extract the taxonomic part before the unique identifier
+JO_c_df_with_tax_abbrev$SimplifiedLabel <- gsub("_ASV_\\d+$", "", JO_c_df_with_tax_abbrev$UniqueLowestTaxaLabel)
+
+# Add a unique numeric ID for each row to differentiate ASVs with the same label
+JO_c_df_with_tax_abbrev$ID <- seq_along(JO_c_df_with_tax_abbrev$SimplifiedLabel)
+
+# Combine the simplified label with the ID for plotting but set the aesthetic to only display the simplified label
+JO_c_df_with_tax_abbrev$PlotLabel <- factor(paste(JO_c_df_with_tax_abbrev$SimplifiedLabel, JO_c_df_with_tax_abbrev$ID, sep = "_"), levels = unique(paste(JO_c_df_with_tax_abbrev$SimplifiedLabel, JO_c_df_with_tax_abbrev$ID, sep = "_")))
+```
+
+
+```{r}
+ggplot(JO_c_df_with_tax_abbrev, aes(x = PlotLabel, y = log2FoldChange)) +
+  geom_bar(stat = "identity", aes(fill = log2FoldChange > 0), width = 0.7) +
+  scale_x_discrete(labels = JO_c_df_with_tax_abbrev$SimplifiedLabel) + # Use simplified labels for x-axis text
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "none") 
+
+```
+
+```{r}
+# Manually define a diverging, colorblind-safe color palette
+# Example colors here are chosen for demonstration; adjust as needed based on your number of phyla
+color_palette <- c("Acidobacteria" = "#1b9e77", "Actinobacteria" = "#d95f02", "Bacteroidetes" = "#7570b3", 
+                   "Proteobacteria" = "#e7298a", "Planctomycetes" = "#66a61e", "Plantae" = "#e6ab02", 
+                   "Gemmatimonadetes" = "#a6761d", "Verrucomicrobia" = "#666666")
+
+JO_c_plot <- ggplot(JO_c_df_with_tax_abbrev, aes(x = factor(ID), y = log2FoldChange, fill = Phylum)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_x_discrete(labels = JO_c_df_with_tax_abbrev$SimplifiedLabel) + # Use simplified labels for x-axis text
+  coord_flip() +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "right") +
+    scale_fill_manual(values = color_palette)
+
+JO_c_plot
+```
+
+
+##### Riparian vs Upland soil cDNA
+
+Now looking at the comparisons between the two soil types for cDNA samples.
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by soil
+bact_deseq_soil_c <- phyloseq_to_deseq2(bact_count_physeq_c, ~soil) 
+
+# and running deseq standard analysis: 
+bact_deseq_soil_c <- DESeq2::DESeq(bact_deseq_soil_c)  
+
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about 
+deseq_res_rip_vs_up_c <- results(bact_deseq_soil_c, alpha=0.01, contrast=c("soil", "riparian", "upland"))  
+
+# we can get a glimpse at what this table currently holds with the summary command 
+summary(deseq_res_rip_vs_up_c)   
+
+# save the entire table as a .csv 
+write.csv(deseq_res_rip_vs_up_c, "sig_table_soil_cDNA_all.csv")  
+
+# let's subset this table to only include these that pass our specified significance level 
+sigtab_res_deseq_rip_vs_up_c <- deseq_res_rip_vs_up_c[which(deseq_res_rip_vs_up_c$padj < 0.01), ]  
+
+# now we can see this table only contains those we consider significantly differentially abundant 
+summary(sigtab_res_deseq_rip_vs_up_c)  
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+sigtab_res_deseq_rip_vs_up_c_with_tax <- cbind(as(sigtab_res_deseq_rip_vs_up_c, "data.frame"), as(tax_table(ASV_physeq)[row.names(sigtab_res_deseq_rip_vs_up_c), ], "matrix"))  
+
+# and now let's sort that table by the baseMean column
+sigtab_res_deseq_rip_vs_up_c_with_tax <- sigtab_res_deseq_rip_vs_up_c_with_tax[order(sigtab_res_deseq_rip_vs_up_c_with_tax$baseMean, decreasing=T), ]  
+
+# save the subsetted table of only our significant ASVs as a table
+sig_tab_soil_c <- sigtab_res_deseq_rip_vs_up_c_with_tax[order(sigtab_res_deseq_rip_vs_up_c_with_tax$baseMean, decreasing=T), ] 
+
+write.csv(sig_tab_soil_c, "sig_table_soil_cDNA.csv")
+```
+
+Within the significant table sig_tab_soil_g, there are two Methyloversatilis ASVs and one Methylophilus ASV.
+
+```{r}
+deseq_res_rip_vs_up_c_df <- as.data.frame(deseq_res_rip_vs_up_c)
+RU_c_df <- deseq_res_rip_vs_up_c_df[complete.cases(deseq_res_rip_vs_up_c_df), ]
+
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+RU_c_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+RU_c_df$diffexpressed[RU_c_df$log2FoldChange > 10 & RU_c_df$padj < 0.00001] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+RU_c_df$diffexpressed[RU_c_df$log2FoldChange < -10 & RU_c_df$padj < 0.00001] <- "DOWN"
+
+
+# plot a volcano plot
+ggplot(data = RU_c_df, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+  geom_vline(xintercept = c(-10, 10), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.00001), col = "black", 
+             linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
+                     labels = c("higher in upland", "not significant", 
+                                "higher in riparian")) + 
+  labs(color = 'gDNA: Riparian vs. Upland', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           ))
+```
+
+```{r}
+# combine dataframe with significant ASVs with the taxonomy of the ASVs
+RU_c_df_with_tax <- cbind(as(RU_c_df, "data.frame"), as(tax_table(ASV_physeq)[row.names(RU_c_df), ], "matrix"))
+write.csv(RU_c_df_with_tax, "sig_table_soil_cDNA_tax.csv")
+```
+
+To address the requirement of labeling each ASV with the lowest available taxonomic classification for your plot, starting with the genus and moving up to higher levels as needed, you can create a new column in your dataframe that determines the lowest available taxonomic classification for each ASV. Here's how you can do it in R:
+1.Assuming your dataframe is named df and contains columns for each taxonomic rank (e.g., Kingdom, Phylum, Class, Order, Family, Genus, Species), you will iterate through each row and check from Genus upwards to Kingdom to find the lowest defined taxonomic rank.
+2. Create a new column in df that will hold the label for plotting, based on the lowest available taxonomic classification.
+```{r}
+# Function to find the lowest available taxonomic classification with prefix
+getLowestTaxaWithPrefix <- function(row) {
+  # Define the order of taxonomic levels from lowest to highest with their prefixes
+  levels <- list(Genus = "g", Family = "f", Order = "o", Class = "c", Phylum = "p", Kingdom = "k")
+  
+  # Iterate through the levels
+  for (level in names(levels)) {
+    # If the taxonomic level is not empty or NA, return it with prefix
+    if (!is.na(row[level]) && row[level] != "") {
+      return(paste0(levels[[level]], "_", row[level]))
+    }
+  }
+  # Return NA if no taxonomic level is found (shouldn't happen if data is complete)
+  return(NA)
+}
+
+# Apply the updated function to each row to create a new column with the lowest taxonomic classification and prefix
+RU_c_df_with_tax$LowestTaxaLabelWithPrefix <- apply(RU_c_df_with_tax, 1, getLowestTaxaWithPrefix)
+```
+
+Option to change the log2FC and pvalue cutoffs
+```{r}
+# add a column of NAs
+RU_c_df_with_tax$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+RU_c_df_with_tax$diffexpressed[RU_c_df_with_tax$log2FoldChange > 5 & RU_c_df_with_tax$padj < 0.0001] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+RU_c_df_with_tax$diffexpressed[RU_c_df_with_tax$log2FoldChange < -5 & RU_c_df_with_tax$padj < 0.0001] <- "DOWN"
+```
+
+
+Showing the same data but in a different way
+```{r}
+# make table only with UP and DOWN taxa
+RU_c_df_with_tax_filtered <- subset(RU_c_df_with_tax, diffexpressed != "NO")
+
+# sort the data based on the Log2FC values to arrange the taxa from highest to lowest fold change
+RU_c_df_with_tax_sorted <- RU_c_df_with_tax_filtered[order(-RU_c_df_with_tax_filtered$log2FoldChange),]
+```
+
+To ensure that each ASV with the same lowest taxa label is shown individually in your plot, you can concatenate a unique identifier (e.g., the ASV number or row number) with the LowestTaxaLabelWithPrefix. This will make each label unique, allowing individual representation in the plot. Here's how you can modify your dataframe to include this unique identifier in the labels:
+```{r}
+# Add a unique identifier to each LowestTaxaLabelWithPrefix
+RU_c_df_with_tax_sorted$UniqueLowestTaxaLabel <- paste(RU_c_df_with_tax_sorted$LowestTaxaLabelWithPrefix, "_", rownames(RU_c_df_with_tax_sorted), sep = "")
+
+# First, ensure UniqueLowestTaxaLabel is a factor
+RU_c_df_with_tax_sorted$UniqueLowestTaxaLabel <- factor(RU_c_df_with_tax_sorted$UniqueLowestTaxaLabel)
+
+# Reorder UniqueLowestTaxaLabel based on Log2FoldChange
+RU_c_df_with_tax_sorted <- RU_c_df_with_tax_sorted %>%
+  mutate(UniqueLowestTaxaLabel = reorder(UniqueLowestTaxaLabel, log2FoldChange, FUN = function(x)-mean(x)))
+
+# remove rows with unresolved taxa or only resolved to kingdom or phylum level
+RU_c_df_with_tax_abbrev <- RU_c_df_with_tax_sorted %>%
+  filter(!grepl("^k_", UniqueLowestTaxaLabel) & !grepl("^p_", UniqueLowestTaxaLabel) & !grepl("NA", UniqueLowestTaxaLabel))
+
+# remove ASV_### identifiers from labels
+# Extract the taxonomic part before the unique identifier
+RU_c_df_with_tax_abbrev$SimplifiedLabel <- gsub("_ASV_\\d+$", "", RU_c_df_with_tax_abbrev$UniqueLowestTaxaLabel)
+
+# Add a unique numeric ID for each row to differentiate ASVs with the same label
+RU_c_df_with_tax_abbrev$ID <- seq_along(RU_c_df_with_tax_abbrev$SimplifiedLabel)
+
+# Combine the simplified label with the ID for plotting but set the aesthetic to only display the simplified label
+RU_c_df_with_tax_abbrev$PlotLabel <- factor(paste(RU_c_df_with_tax_abbrev$SimplifiedLabel, RU_c_df_with_tax_abbrev$ID, sep = "_"), levels = unique(paste(RU_c_df_with_tax_abbrev$SimplifiedLabel, RU_c_df_with_tax_abbrev$ID, sep = "_")))
+```
+
+
+```{r}
+ggplot(RU_c_df_with_tax_abbrev, aes(x = PlotLabel, y = log2FoldChange)) +
+  geom_bar(stat = "identity", aes(fill = log2FoldChange > 0), width = 0.7) +
+  scale_x_discrete(labels = RU_c_df_with_tax_abbrev$SimplifiedLabel) + # Use simplified labels for x-axis text
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "none") 
+
+```
+
+```{r}
+# Manually define a diverging, colorblind-safe color palette
+# Example colors here are chosen for demonstration; adjust as needed based on your number of phyla
+color_palette <- c("Acidobacteria" = "#1b9e77", "Actinobacteria" = "#d95f02", "Bacteroidetes" = "#7570b3", 
+                   "Proteobacteria" = "#e7298a", "Planctomycetes" = "#66a61e", "Plantae" = "#e6ab02", 
+                   "Gemmatimonadetes" = "#a6761d", "Verrucomicrobia" = "#666666")
+
+RU_c_plot <- ggplot(RU_c_df_with_tax_abbrev, aes(x = factor(ID), y = log2FoldChange, fill = Phylum)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_x_discrete(labels = RU_c_df_with_tax_abbrev$SimplifiedLabel) + # Use simplified labels for x-axis text
+  coord_flip() +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "right") +
+    scale_fill_manual(values = color_palette)
+
+RU_c_plot
+```
+
+
+Make a grid of our four plots: 
+1) June vs. oct gDNA
+2) upland vs. riparian gDNA
+3) June vs. Oct cDNA
+4) upland vs. riparian cDNA
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(cowplot)
+
+# Assuming the plots are already created, adjust y-axis label font size
+JO_g_plot <- JO_g_plot + theme(axis.text.y = element_text(size = 8))
+RU_g_plot <- RU_g_plot + theme(axis.text.y = element_text(size = 8))
+JO_c_plot <- JO_c_plot + theme(axis.text.y = element_text(size = 8))
+RU_c_plot <- RU_c_plot + theme(axis.text.y = element_text(size = 8))
+
+# Extract the legend from one plot (assuming RU_c_plot has the legend)
+legend <- get_legend(RU_c_plot)
+
+# Remove legends from individual plots 
+JO_g_plot <- JO_g_plot + theme(legend.position = "none")
+RU_g_plot <- RU_g_plot + theme(legend.position = "none")
+JO_c_plot <- JO_c_plot + theme(legend.position = "none")
+RU_c_plot <- JO_c_plot + theme(legend.position = "none")
+# RU_c_plot keeps its legend as it will be placed in the bottom-right position
+
+# Use cowplot to arrange the plots and align one shared legend
+plot_grid_combined <- plot_grid(JO_g_plot, RU_g_plot, JO_c_plot, RU_c_plot, nrow = 2, align = 'v', axis = 'lrbt', 
+                                labels = c("A", "B", "C", "D"), 
+                                hjust = -0.5, vjust = 1.5,
+                                label_size = 12)
+
+
+
+# Combine the grid of plots with the legend
+final_plot <- plot_grid(plot_grid_combined, legend, ncol = 2, rel_widths = c(1, .2))
+
+# Print the final combined plot
+print(final_plot)
+
+```
+
+### MOB and NMH diffential abundance analysis
+
+
+Starting with our gDNA-only DESeq results, we will then filter for only our ASVs of interest
+
+##### June vs October month gDNA
+
+Now run the DESeq2 step using the month as our comparison.
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by month
+bact_deseq_month_g <- phyloseq_to_deseq2(bact_count_physeq_g, ~month)
+
+# and running deseq standard analysis:
+bact_deseq_month_g <- DESeq(bact_deseq_month_g)
+
+
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about
+deseq_res_June_vs_Oct_g <- results(bact_deseq_month_g, alpha=0.01, contrast=c("month", "June", "October"))
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_June_vs_Oct_g) 
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+deseq_res_June_vs_Oct_g_with_tax <- cbind(as(deseq_res_June_vs_Oct_g, "data.frame"), as(tax_table(ASV_physeq)[row.names(deseq_res_June_vs_Oct_g), ], "matrix"))
+
+# let's subset this table to only include the genera of interest (MOBs and NMHs)
+library(dplyr)
+library(stringr)
+
+# List of target genera as a single string separated by pipes for regex matching
+target_genera <- "Methylosinus|Methylocystis|Methylocella|Methylocapsa|Methyloferula|Methylomonas|Methylobacter|Methylococcus|Methylomicrobium|Methylosphaera|Methylocaldum|Methylosarcina|Methylogaea|Methylosoma|Methylomarinum|Methylovulum|Methyloprofundus|Clonothrix|Methylothermus|Methylohalobius|Crenothrix|Methylacidiphilum|Methylophilus|Methylobacterium|Methyloversatilis|Methylotenera|Methylorubrum|Methyloceanibacter|Methyloligella|Methylopila|Methylibium|Methylovorus|Methylophaga|Methylobacillus|Flavobacterium|Acidovorax|Comamonas"
+
+# Filter dataframe for rows where "Genus" matches any name in the target_genera list
+JO_g_filtered_df <- deseq_res_June_vs_Oct_g_with_tax %>%
+  filter(str_detect(Genus, target_genera))
+
+# View the filtered dataframe
+print(JO_g_filtered_df)
+```
+
+```{r}
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+JO_g_filtered_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+JO_g_filtered_df$diffexpressed[JO_g_filtered_df$log2FoldChange > 1 & JO_g_filtered_df$padj < 0.01] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+JO_g_filtered_df$diffexpressed[JO_g_filtered_df$log2FoldChange < -1 & JO_g_filtered_df$padj < 0.01] <- "DOWN"
+
+
+# plot a volcano plot
+ggplot(data = JO_g_filtered_df, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+  geom_vline(xintercept = c(-1, 1), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.01), col = "black", 
+             linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
+                     labels = c("higher in Oct", "not significant", 
+                                "higher in June")) + 
+  coord_cartesian(ylim = c(0, 5)) + 
+  labs(color = 'gDNA: June vs. October', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           ))
+```
+```{r}
+# Function to find the lowest available taxonomic classification with prefix
+getLowestTaxaWithPrefix <- function(row) {
+  # Define the order of taxonomic levels from lowest to highest with their prefixes
+  levels <- list(Genus = "g", Family = "f", Order = "o", Class = "c", Phylum = "p", Kingdom = "k")
+  
+  # Iterate through the levels
+  for (level in names(levels)) {
+    # If the taxonomic level is not empty or NA, return it with prefix
+    if (!is.na(row[level]) && row[level] != "") {
+      return(paste0(levels[[level]], "_", row[level]))
+    }
+  }
+  # Return NA if no taxonomic level is found (shouldn't happen if data is complete)
+  return(NA)
+}
+
+# Apply the updated function to each row to create a new column with the lowest taxonomic classification and prefix
+JO_g_filtered_df$LowestTaxaLabelWithPrefix <- apply(JO_g_filtered_df, 1, getLowestTaxaWithPrefix)
+```
+
+Option to change the log2FC and pvalue cutoffs
+```{r}
+# add a column of NAs
+JO_g_filtered_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+JO_g_filtered_df$diffexpressed[JO_g_filtered_df$log2FoldChange > 1 & JO_g_filtered_df$padj < 0.01] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+JO_g_filtered_df$diffexpressed[JO_g_filtered_df$log2FoldChange < -1 & JO_g_filtered_df$padj < 0.01] <- "DOWN"
+```
+
+
+Showing the same data but in a different way
+```{r}
+# make table only with UP and DOWN taxa
+JO_g_filtered <- subset(JO_g_filtered_df, diffexpressed != "NO")
+
+# sort the data based on the Log2FC values to arrange the taxa from highest to lowest fold change
+JO_g_sorted <- JO_g_filtered[order(-JO_g_filtered$log2FoldChange),]
+```
+
+To ensure that each ASV with the same lowest taxa label is shown individually in your plot, you can concatenate a unique identifier (e.g., the ASV number or row number) with the LowestTaxaLabelWithPrefix. This will make each label unique, allowing individual representation in the plot. Here's how you can modify your dataframe to include this unique identifier in the labels:
+```{r}
+# Add a unique identifier to each LowestTaxaLabelWithPrefix
+JO_g_sorted$UniqueLowestTaxaLabel <- paste(JO_g_sorted$LowestTaxaLabelWithPrefix, "_", rownames(JO_g_sorted), sep = "")
+
+# First, ensure UniqueLowestTaxaLabel is a factor
+JO_g_sorted$UniqueLowestTaxaLabel <- factor(JO_g_sorted$UniqueLowestTaxaLabel)
+
+# Reorder UniqueLowestTaxaLabel based on Log2FoldChange
+JO_g_sorted <- JO_g_sorted %>%
+  mutate(UniqueLowestTaxaLabel = reorder(UniqueLowestTaxaLabel, log2FoldChange, FUN = function(x)-mean(x)))
+
+# Remove rows that are only identified to the phylum or kingdom level, and remove rows with no taxa ("NA")
+JO_g_sorted_abbrev <- JO_g_sorted %>%
+  filter(!grepl("^k_", UniqueLowestTaxaLabel) & !grepl("^p_", UniqueLowestTaxaLabel) & !grepl("NA", UniqueLowestTaxaLabel))
+
+# remove "ASV_###" identifier for a cleaner look to the plot
+# Extract the taxonomic part before the unique identifier
+JO_g_sorted_abbrev$SimplifiedLabel <- gsub("_ASV_\\d+$", "", JO_g_sorted_abbrev$UniqueLowestTaxaLabel)
+
+# Add a unique numeric ID for each row to differentiate ASVs with the same label
+JO_g_sorted_abbrev$ID <- seq_along(JO_g_sorted_abbrev$SimplifiedLabel)
+
+# Combine the simplified label with the ID for plotting but set the aesthetic to only display the simplified label
+JO_g_sorted_abbrev$PlotLabel <- factor(paste(JO_g_sorted_abbrev$SimplifiedLabel, JO_g_sorted_abbrev$ID, sep = "_"), levels = unique(paste(JO_g_sorted_abbrev$SimplifiedLabel, JO_g_sorted_abbrev$ID, sep = "_")))
+```
+
+```{r}
+ggplot(JO_g_sorted_abbrev, aes(x = PlotLabel, y = log2FoldChange)) +
+  geom_bar(stat = "identity", aes(fill = log2FoldChange > 0), width = 0.7) +
+  scale_x_discrete(labels = JO_g_sorted_abbrev$SimplifiedLabel) + # Use simplified labels for x-axis text
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 10, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        legend.position = "none") 
+
+```
+
+
+##### Upland vs riparian month gDNA
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by soil
+bact_deseq_soil_g <- phyloseq_to_deseq2(bact_count_physeq_g, ~soil) 
+
+# and running deseq standard analysis: 
+bact_deseq_soil_g <- DESeq2::DESeq(bact_deseq_soil_g)  
+
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about 
+deseq_res_rip_vs_up_g <- results(bact_deseq_soil_g, alpha=0.01, contrast=c("soil", "riparian", "upland")) 
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_rip_vs_up_g) 
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+deseq_res_rip_vs_up_g_with_tax <- cbind(as(deseq_res_rip_vs_up_g, "data.frame"), as(tax_table(ASV_physeq)[row.names(deseq_res_rip_vs_up_g), ], "matrix"))
+
+# let's subset this table to only include the genera of interest (MOBs and NMHs)
+library(dplyr)
+library(stringr)
+
+# List of target genera as a single string separated by pipes for regex matching
+target_genera <- "Methylosinus|Methylocystis|Methylocella|Methylocapsa|Methyloferula|Methylomonas|Methylobacter|Methylococcus|Methylomicrobium|Methylosphaera|Methylocaldum|Methylosarcina|Methylogaea|Methylosoma|Methylomarinum|Methylovulum|Methyloprofundus|Clonothrix|Methylothermus|Methylohalobius|Crenothrix|Methylacidiphilum|Methylophilus|Methylobacterium|Methyloversatilis|Methylotenera|Methylorubrum|Methyloceanibacter|Methyloligella|Methylopila|Methylibium|Methylovorus|Methylophaga|Methylobacillus|Flavobacterium|Acidovorax|Comamonas"
+
+# Filter dataframe for rows where "Genus" matches any name in the target_genera list
+RU_g_filtered_df <- deseq_res_rip_vs_up_g_with_tax %>%
+  filter(str_detect(Genus, target_genera))
+
+# View the filtered dataframe
+print(RU_g_filtered_df)
+```
+
+```{r}
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+RU_g_filtered_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+RU_g_filtered_df$diffexpressed[RU_g_filtered_df$log2FoldChange > 1 & RU_g_filtered_df$padj < 0.01] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+RU_g_filtered_df$diffexpressed[RU_g_filtered_df$log2FoldChange < -1 & RU_g_filtered_df$padj < 0.01] <- "DOWN"
+
+
+# plot a volcano plot
+ggplot(data = RU_g_filtered_df, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+  geom_vline(xintercept = c(-1, 1), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.01), col = "black", 
+             linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
+                     labels = c("higher in Oct", "not significant", 
+                                "higher in June")) + 
+  coord_cartesian(ylim = c(0, 5)) + 
+  labs(color = 'gDNA: June vs. October', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           ))
+```
+
+Showing the same data but in a different way
+```{r}
+# make table only with UP and DOWN taxa
+RU_g_filtered <- subset(RU_g_filtered_df, diffexpressed != "NO")
+
+# sort the data based on the Log2FC values to arrange the taxa from highest to lowest fold change
+RU_g_sorted <- RU_g_filtered[order(-RU_g_filtered$log2FoldChange),]
+```
+
+To ensure that each ASV with the same lowest taxa label is shown individually in your plot, you can concatenate a unique identifier (e.g., the ASV number or row number) with the LowestTaxaLabelWithPrefix. This will make each label unique, allowing individual representation in the plot. Here's how you can modify your dataframe to include this unique identifier in the labels:
+```{r}
+# First, ensure UniqueLowestTaxaLabel is a factor
+RU_g_sorted$UniqueLowestTaxaLabel <- factor(RU_g_sorted$UniqueLowestTaxaLabel)
+
+# Reorder UniqueLowestTaxaLabel based on Log2FoldChange
+RU_g_sorted <- RU_g_sorted %>%
+  mutate(UniqueLowestTaxaLabel = reorder(UniqueLowestTaxaLabel, log2FoldChange, FUN = function(x)-mean(x)))
+
+# remove "ASV_###" identifier for a cleaner look to the plot
+# Extract the taxonomic part before the unique identifier
+RU_g_sorted$SimplifiedLabel <- gsub("_ASV_\\d+$", "", RU_g_sorted$UniqueLowestTaxaLabel)
+
+# Add a unique numeric ID for each row to differentiate ASVs with the same label
+RU_g_sorted$ID <- seq_along(RU_g_sorted$SimplifiedLabel)
+
+# Combine the simplified label with the ID for plotting but set the aesthetic to only display the simplified label
+RU_g_sorted$PlotLabel <- factor(paste(RU_g_sorted$SimplifiedLabel, RU_g_sorted$ID, sep = "_"), levels = unique(paste(RU_g_sorted$SimplifiedLabel, RU_g_sorted$ID, sep = "_")))
+```
+
+```{r}
+ggplot(RU_g_sorted, aes(x = PlotLabel, y = log2FoldChange)) +
+  geom_bar(stat = "identity", aes(fill = log2FoldChange > 0), width = 0.7) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+  scale_x_discrete(labels = RU_g_sorted$SimplifiedLabel) + # Use simplified labels for x-axis text
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "none") 
+
+```
+
+```{r}
+ggplot(RU_g_sorted, aes(x = factor(ID), y = log2FoldChange, fill = Family)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_x_discrete(labels = RU_g_sorted$SimplifiedLabel) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +# Use simplified labels for x-axis text
+  coord_flip() +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "right")
+```
+##### June vs October month cDNA (MOB)
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by month
+bact_deseq_month_c <- phyloseq_to_deseq2(bact_count_physeq_c, ~month)
+
+# and running deseq standard analysis:
+bact_deseq_month_c <- DESeq(bact_deseq_month_c)
+
+
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about
+deseq_res_June_vs_Oct_c <- results(bact_deseq_month_c, alpha=0.01, contrast=c("month", "June", "October"))
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_June_vs_Oct_c) 
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+deseq_res_June_vs_Oct_c_with_tax <- cbind(as(deseq_res_June_vs_Oct_c, "data.frame"), as(tax_table(ASV_physeq)[row.names(deseq_res_June_vs_Oct_c), ], "matrix"))
+
+# let's subset this table to only include the genera of interest (MOBs and NMHs)
+# List of target genera as a single string separated by pipes for regex matching
+target_genera <- "Methylosinus|Methylocystis|Methylocella|Methylocapsa|Methyloferula|Methylomonas|Methylobacter|Methylococcus|Methylomicrobium|Methylosphaera|Methylocaldum|Methylosarcina|Methylogaea|Methylosoma|Methylomarinum|Methylovulum|Methyloprofundus|Clonothrix|Methylothermus|Methylohalobius|Crenothrix|Methylacidiphilum|Methylophilus|Methylobacterium|Methyloversatilis|Methylotenera|Methylorubrum|Methyloceanibacter|Methyloligella|Methylopila|Methylibium|Methylovorus|Methylophaga|Methylobacillus|Flavobacterium|Acidovorax|Comamonas"
+
+# Filter dataframe for rows where "Genus" matches any name in the target_genera list
+JO_c_filtered_df <- deseq_res_June_vs_Oct_c_with_tax %>%
+  filter(str_detect(Genus, target_genera))
+
+# View the filtered dataframe
+print(JO_c_filtered_df)
+```
+
+```{r}
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+JO_c_filtered_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+JO_c_filtered_df$diffexpressed[JO_c_filtered_df$log2FoldChange > 1 & JO_c_filtered_df$padj < 0.01] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+JO_c_filtered_df$diffexpressed[JO_c_filtered_df$log2FoldChange < -1 & JO_c_filtered_df$padj < 0.01] <- "DOWN"
+
+
+# plot a volcano plot
+ggplot(data = JO_c_filtered_df, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+  geom_vline(xintercept = c(-1, 1), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.01), col = "black", 
+             linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
+                     labels = c("higher in Oct", "not significant", 
+                                "higher in June")) + 
+  coord_cartesian(ylim = c(0, 5)) + 
+  labs(color = 'gDNA: June vs. October', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           ))
+```
+
+Showing the same data but in a different way
+```{r}
+# make table only with UP and DOWN taxa
+JO_c_filtered <- subset(JO_c_filtered_df, diffexpressed != "NO")
+
+# sort the data based on the Log2FC values to arrange the taxa from highest to lowest fold change
+JO_c_sorted <- JO_c_filtered[order(-JO_c_filtered$log2FoldChange),]
+
+# Add a unique numeric ID for each row to differentiate ASVs with the same label
+JO_c_sorted$ID <- seq_along(JO_c_sorted$Genus)
+
+# Combine the simplified label with the ID for plotting but set the aesthetic to only display the simplified label
+JO_c_sorted$PlotLabel <- factor(paste(JO_c_sorted$Genus, JO_c_sorted$ID, sep = "_"), levels = unique(paste(JO_c_sorted$Genus, JO_c_sorted$ID, sep = "_")))
+```
+
+
+```{r}
+ggplot(JO_c_sorted, aes(x = PlotLabel, y = log2FoldChange)) +
+  geom_bar(stat = "identity", aes(fill = log2FoldChange > 0), width = 0.7) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+   scale_x_discrete(labels = JO_c_sorted$Genus) + 
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "none") 
+
+```
+
+```{r}
+ggplot(JO_c_sorted, aes(x = PlotLabel, y = log2FoldChange, fill = Family)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+  scale_x_discrete(labels = JO_c_sorted$Genus) + # Use simplified labels for x-axis text
+  coord_flip() +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        legend.position = "right")
+```
+##### Riparian vs Upland soil cDNA (MOB)
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by soil
+bact_deseq_soil_c <- phyloseq_to_deseq2(bact_count_physeq_c, ~soil) 
+
+# and running deseq standard analysis: 
+bact_deseq_soil_c <- DESeq2::DESeq(bact_deseq_soil_c)  
+
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about 
+deseq_res_rip_vs_up_c <- results(bact_deseq_soil_c, alpha=0.01, contrast=c("soil", "riparian", "upland")) 
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_rip_vs_up_c) 
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+deseq_res_rip_vs_up_c_with_tax <- cbind(as(deseq_res_rip_vs_up_c, "data.frame"), as(tax_table(ASV_physeq)[row.names(deseq_res_rip_vs_up_c), ], "matrix"))
+
+# let's subset this table to only include the genera of interest (MOBs and NMHs)
+# List of target genera as a single string separated by pipes for regex matching
+target_genera <- "Methylosinus|Methylocystis|Methylocella|Methylocapsa|Methyloferula|Methylomonas|Methylobacter|Methylococcus|Methylomicrobium|Methylosphaera|Methylocaldum|Methylosarcina|Methylogaea|Methylosoma|Methylomarinum|Methylovulum|Methyloprofundus|Clonothrix|Methylothermus|Methylohalobius|Crenothrix|Methylacidiphilum|Methylophilus|Methylobacterium|Methyloversatilis|Methylotenera|Methylorubrum|Methyloceanibacter|Methyloligella|Methylopila|Methylibium|Methylovorus|Methylophaga|Methylobacillus|Flavobacterium|Acidovorax|Comamonas"
+
+# Filter dataframe for rows where "Genus" matches any name in the target_genera list
+RU_c_filtered_df <- deseq_res_rip_vs_up_c_with_tax %>%
+  filter(str_detect(Genus, target_genera))
+
+# View the filtered dataframe
+print(RU_c_filtered_df)
+```
+
+```{r}
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+RU_c_filtered_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
+RU_c_filtered_df$diffexpressed[RU_c_filtered_df$log2FoldChange > 1 & RU_c_filtered_df$padj < 0.01] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+RU_c_filtered_df$diffexpressed[RU_c_filtered_df$log2FoldChange < -1 & RU_c_filtered_df$padj < 0.01] <- "DOWN"
+
+
+# plot a volcano plot
+ggplot(data = RU_c_filtered_df, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+  geom_vline(xintercept = c(-1, 1), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.01), col = "black", 
+             linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
+                     labels = c("higher in Oct", "not significant", 
+                                "higher in June")) + 
+  coord_cartesian(ylim = c(0, 5)) + 
+  labs(color = 'gDNA: June vs. October', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           ))
+```
+
+Showing the same data but in a different way
+```{r}
+# make table only with UP and DOWN taxa
+RU_c_filtered <- subset(RU_c_filtered_df, diffexpressed != "NO")
+
+# sort the data based on the Log2FC values to arrange the taxa from highest to lowest fold change
+RU_c_sorted <- RU_c_filtered[order(-RU_c_filtered$log2FoldChange),]
+
+# Add a unique numeric ID for each row to differentiate ASVs with the same label
+RU_c_sorted$ID <- seq_along(RU_c_sorted$Genus)
+
+# Combine the simplified label with the ID for plotting but set the aesthetic to only display the simplified label
+RU_c_sorted$PlotLabel <- factor(paste(RU_c_sorted$Genus, RU_c_sorted$ID, sep = "_"), levels = unique(paste(RU_c_sorted$Genus, RU_c_sorted$ID, sep = "_")))
+```
+
+
+```{r}
+ggplot(RU_c_sorted, aes(x = PlotLabel, y = log2FoldChange)) +
+  geom_bar(stat = "identity", aes(fill = log2FoldChange > 0), width = 0.7) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+   scale_x_discrete(labels = RU_c_sorted$Genus) + 
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+        legend.position = "none") 
+
+```
+
+```{r}
+ggplot(RU_c_sorted, aes(x = PlotLabel, y = log2FoldChange, fill = Family)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+  scale_x_discrete(labels = RU_c_sorted$Genus) + # Use simplified labels for x-axis text
+  coord_flip() +
+  labs(y = "Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        legend.position = "right")
+```
+
+\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-- Return to variance stabilized transformed data until further notice.
+
+## ALPHA DIVERSITY
+
+Alpha diversity entails using summary metrics that describe individual samples, and it is a very tricky thing when working with amplicon data. There are a lot of tools from macro-ecology that have been co-opted into the microbial ecology world unchecked that unfortunately just simply do not work the same. If and when I use any alpha diversity metrics, I mostly consider them useful for relative comparisons of samples from the same experiment, and think of them as a just another summary metric (and **not** some sort of absolute truth about a sample). And particularly be cautious with estimators and extrapolations, as these typically just don't work the same (i.e. are not statistically robust, and not biologically meaningful) in our current micro-world as they are when applied to the macro-world.
+
+### Raw counts: Rarefaction curves
+
+First thing's first, **it is not okay to use rarefaction curves to estimate total richness of a sample**, or to extrapolate anything from them really, but they can still be useful in filling out your mental landscape of your samples depending on the data. Let's generate the plot and then we'll see why with this example. We'll be using the `rarecurve()` function from the package [vegan](https://github.com/vegandevs/vegan) here. Note that vegan expects rows to be samples and observations (our ASVs here) to be columns, which is why we transpose the first table in the command with `t()`.
+
+Resource: <https://yulab-smu.top/MicrobiotaProcessWorkshop/articles/MicrobiotaProcessWorkshop.html>
+
+```{r message=FALSE, warning=FALSE}
+library(MicrobiotaProcess)
+library(patchwork)
+
+# for reproducibly random number
+set.seed(777)
+ps = rarefy_even_depth(ASV_physeq, replace = TRUE)
+
+rareres <- get_rarecurve(obj=ps, chunks=400)
+
+ggrarecurve(obj=rareres,
+                      indexNames=c("Observe","Chao1","ACE")) +
+          theme(legend.spacing.y=unit(0.01,"cm"),
+                legend.text=element_text(size=4)) + my_theme
+```
+
+```{r}
+prare1 <- ggrarecurve(obj=rareres, factorNames="month",
+                      indexNames=c("Observe", "Chao1", "ACE")) +
+          scale_fill_manual(values=c("#00AED7", "#FD9347"))+
+          scale_color_manual(values=c("#00AED7", "#FD9347"))+
+          theme_bw()+
+          theme(axis.text=element_text(size=8), 
+                panel.grid=element_blank(),
+                strip.background = element_rect(colour=NA, 
+                                                fill="grey"),
+                strip.text.x = element_text(face="bold"))          
+
+prare2 <- ggrarecurve(obj=rareres,
+                      factorNames="month",
+                      shadow=FALSE,
+                      indexNames=c("Observe", "Chao1", "ACE")) +
+          scale_color_manual(values=c("#00AED7", "#FD9347"))+
+          theme_bw()+
+          theme(axis.text=element_text(size=8), 
+                panel.grid=element_blank(),
+                strip.background = element_rect(colour=NA, 
+                                                fill="grey"),
+                strip.text.x = element_text(face="bold"))
+
+prare1 / prare2
+```
+
+```{r}
+prare3 <- ggrarecurve(obj=rareres, factorNames="soil",
+                      indexNames=c("Observe", "Chao1", "ACE")) +
+          scale_fill_manual(values=c("#00AED7", "#FD9347"))+
+          scale_color_manual(values=c("#00AED7", "#FD9347"))+
+          theme_bw()+
+          theme(axis.text=element_text(size=8), 
+                panel.grid=element_blank(),
+                strip.background = element_rect(colour=NA, 
+                                                fill="grey"),
+                strip.text.x = element_text(face="bold"))
+
+prare4 <- ggrarecurve(obj=rareres,
+                      factorNames="soil",
+                      shadow=FALSE,
+                      indexNames=c("Observe", "Chao1", "ACE")) +
+          scale_color_manual(values=c("#00AED7", "#FD9347"))+
+          theme_bw()+
+          theme(axis.text=element_text(size=8), 
+                panel.grid=element_blank(),
+                strip.background = element_rect(colour=NA, 
+                                                fill="grey"),
+                strip.text.x = element_text(face="bold"))
+
+prare3 / prare4
+```
+
+```{r}
+prare5 <- ggrarecurve(obj=rareres, factorNames="template",
+                      indexNames=c("Observe", "Chao1", "ACE")) +
+          scale_fill_manual(values=c("#00AED7", "#FD9347"))+
+          scale_color_manual(values=c("#00AED7", "#FD9347"))+
+          theme_bw()+
+          theme(axis.text=element_text(size=8), 
+                panel.grid=element_blank(),
+                strip.background = element_rect(colour=NA, 
+                                                fill="grey"),
+                strip.text.x = element_text(face="bold"))
+
+prare6 <- ggrarecurve(obj=rareres,
+                      factorNames="template",
+                      shadow=FALSE,
+                      indexNames=c("Observe", "Chao1", "ACE")) +
+          scale_color_manual(values=c("#00AED7", "#FD9347"))+
+          theme_bw()+
+          theme(axis.text=element_text(size=8), 
+                panel.grid=element_blank(),
+                strip.background = element_rect(colour=NA, 
+                                                fill="grey"),
+                strip.text.x = element_text(face="bold"))
+
+prare5 / prare6
+```
+
+Calculation of alpha index
+
+```{r}
+alphaobj <- get_alphaindex(ps)
+head(as.data.frame(alphaobj))
+```
+
+```{r}
+ggbox(alphaobj, geom="violin", factorNames="month") +
+           scale_fill_manual(values=c("#00AED7", "#FD9347"))+
+           theme(strip.background = element_rect(colour=NA, fill="grey"))
+
+ggbox(alphaobj, geom="violin", factorNames="soil") +
+           scale_fill_manual(values=c("#00AED7", "#FD9347"))+
+           theme(strip.background = element_rect(colour=NA, fill="grey"))
+
+ggbox(alphaobj, geom="violin", factorNames="template") +
+           scale_fill_manual(values=c("#00AED7", "#FD9347"))+
+           theme(strip.background = element_rect(colour=NA, fill="grey"))
+```
+
+### Raw counts: Richness and diversity estimates
+
+Chao1 is a richness estimator, "richness" being the total number of distinct units in our sample, "distinct units" being whatever we happen to be measuring (ASVs in our case here). Shannon's diversity index is a metric of diversity. The term diversity includes "richness" (the total number of our distinct units) and "evenness" (the relative proportions of all of our distinct units). IMPORTANT: these are really just metrics to help contrast our samples within an experiment, and should not be considered "true" values of anything or be compared across studies.
+
+```{r}
+# first we need to create a phyloseq object using our un-transformed count table
+count_tab_phy <- phyloseq::otu_table(bact_count_table, taxa_are_rows=T)
+tax_tab_phy <- phyloseq::tax_table(bact_taxa_table)
+
+ASV_physeq <- phyloseq(count_tab_phy, tax_tab_phy, sample_info_table_bact_phy)
+```
+
+```{r}
+# and now we can call the plot_richness() function on our phyloseq object
+plot_richness(ASV_physeq,measures=c("Chao1", "Shannon")) + 
+theme_bw() + theme(legend.title = element_blank(), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+```{r}
+# another option is to plot by grouping sample type
+plot_richness(ASV_physeq, x="month",
+              measures=c("Chao1", "Shannon")) + 
+  theme_bw() + 
+  theme(legend.title = element_blank(), 
+        axis.text.x = element_text(angle = 90, 
+                                   vjust = 0.5, hjust = 1))
+
+plot_richness(ASV_physeq, x="soil",
+              measures=c("Chao1", "Shannon")) + 
+  theme_bw() + 
+  theme(legend.title = element_blank(), 
+        axis.text.x = element_text(angle = 90, 
+                                   vjust = 0.5, hjust = 1))
+
+plot_richness(ASV_physeq, x="template",
+              measures=c("Chao1", "Shannon")) + 
+  theme_bw() + 
+  theme(legend.title = element_blank(), 
+        axis.text.x = element_text(angle = 90, 
+                                   vjust = 0.5, hjust = 1))
+```
+
+One last note on interpretation here, don't forget Chao1 is richness and Shannon is diversity, and what these mean as discussed above. In the Chao1 plot, the lowest three samples from June cDNA have higher estimated richness than the lowest October cDNA sample, but in the Shannon plot the three June samples have a lower Shannon diversity than the October sample. This suggests that the June samples have a greater "evenness"; even though June may have more biological units/ASVs, it may be largely dominated by only a few of them.
+
+### DESeq2: PERMANOVA/adonis to test for differences in microbial composition between soil types and months
+
+First, we create a distance matrix using Bray-Curtis distance from log normalized counts table for bacteria ASVs.
+
+```{r}
+bact_bray_dist <- vegdist(t(bact_vst_trans_counts_table))
+```
+
+Before running the PERMANOVA, we must assess if there is a sufficient level of homogeneity of dispersion with groups using the betadisper/ANOVA function in the vegan package (p value \< 0.05 indicates within-group dispersion is significantly different)
+
+```{r}
+set.seed(777) #don't change this
+anova(betadisper(bact_bray_dist, bact_sample_info_table$soil)) 
+```
+
+Looks like there is a significant difference between the variation that is found within riparian soil samples and the variation found within upland soil samples. Typically, when dispersions are significant (as in our case), you need to be mindful of what test you follow up with to see if the centroids of our two populations (riparian vs. upland) are significantly different. The null hypothesis of PERMANOVA/adonis is that "the centroids of the groups, as defined in the space of the chose resemblance measure, are equivalent for all groups." (<https://doi.org/10.1890/12-2010.1>) However, PERMANOVA is reported to be largely unaffected by heterogeneity for balanced designs, where balanced designs means an equal number of observations for all possible level combinations, which is what we have here with our Red Butte Creek data. Therefore, we can proceed with the PERMANOVA/adonis analysis.
+
+```{r}
+adonis2(bact_bray_dist ~ bact_sample_info_table$soil, permutations = 9999)
+```
+
+The Pr (\>F) value is 0.0002, which is significant. This means we reject the null hypothesis that the centroids of our two groups (riparian and upland) are the same. In other words, there is significant difference between the riparian and upland ASV communities.
+
+Using anova and adonis, let's also check if the centroids of the June and October communities are the same.
+
+```{r}
+set.seed(777) #don't change this
+anova(betadisper(bact_bray_dist, bact_sample_info_table$month)) 
+```
+
+Looks like the variation within the June samples and the variation within the October samples are similar, so we can fully trust our PERMANOVA/adonis results in the next step.
+
+```{r}
+adonis2(bact_bray_dist ~ bact_sample_info_table$month, permutations = 9999)
+```
+
+Here we are seeing a p value of 0.0007, which tells us the centroids of the June and October communities are significantly different.
+
+We don't have to ignore the significance tests results from the soil data, however. If we wanted to be extra careful because of our significant anova result with the riparian vs upland test, we can instead subset our data to find comparisons that have similar dispersions (non significant result from anova test) and then run the PERMANOVA/adonis on those subsets.
+
+One example of this might be looking at riparian vs. upland communities only within the gDNA-derived amplicon libraries and then separately looking at riparian vs. upland within the cDNA-derived amplicons. We will first start by looking at the gDNA.
+
+### DESeq2: PERMANOVA/adonis of gDNA communities only
+
+```{r}
+# create variable that holds the gDNA samples
+gDNA_wanted <- c("gDNA")
+
+# transform our vst counts table so that sample names are in rows and ASVs are in columns
+bact_vst_trans_counts_table_t <- as.data.frame(t(bact_vst_trans_counts_table))
+
+# create a tibble of our vst trans counts to make it easier to merge with the metadata table
+bact_vst_trans_counts_tbl_t <- bact_vst_trans_counts_table_t %>%
+  as_tibble(rownames = "sample")
+
+# create a tibble of our metadata, merge it with vst counts table, then use the variable holding gDNA samples to remove any cDNA samples. We will also remove the metadata columns after we do the cDNA filtering step and convert back to a data frame. 
+gDNA_bact_tbl <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(template %in% gDNA_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+# new distance matrix of only gDNA
+gDNA_euc_dist <- dist(gDNA_bact_tbl)
+
+gDNA_bray_dist <- vegdist(gDNA_bact_tbl)
+```
+
+Running the anova on gDNA samples subset, looking at the variation between riparian and upland soil communities:
+
+```{r}
+# need to filter our metadata table too
+gDNA_metadata <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% gDNA_wanted) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+set.seed(777) #don't change this
+anova(betadisper(gDNA_bray_dist, gDNA_metadata$soil)) 
+```
+
+We get a p value of 0.02128, which tells us that the centroids of the riparian gDNA community and the upland gDNA community are different. We will still run the PERMANOVA, but we will keep the results of the anova in mind when we interpret the data.
+
+```{r}
+adonis2(gDNA_bray_dist ~ gDNA_metadata$soil, permutations = 9999)
+```
+
+No significant difference between the ASV communities of the gDNA community and the upland gDNA community. Let's try comparing months within the gDNA samples.
+
+```{r}
+set.seed(777) #don't change this
+anova(betadisper(gDNA_bray_dist, gDNA_metadata$month)) 
+adonis2(gDNA_bray_dist ~ gDNA_metadata$month, permutations = 9999)
+```
+
+The anova is not significant, so we can trust the PERMANOVA results, which happen to be significant with a p value of 0.0017. This tells us that within the gDNA samples, the month collected matters more in terms of community differences rather than the soil type. In other words riparian and upland soil from June are, as a group, significantly different from riparian and upland soil from October. Also, the riparian soil from June and October gDNA samples are not significantly different from the upland soils from June and October.
+
+**INTERPRETATION**: This tells me that there may not be distinct, season-long, permanent communities that exist and are unique to the riparian and the upland soil respectively. If there were, I would expect there to be a significant difference between the two soil types regardless of when we sampled them, either June or October. Instead, what we are seeing is a significant difference when we compare the communities from all soil in June vs the communities in all soil from October. This suggests widespread changes in "who's there" (gDNA-based) for all soil, depending on the time of year. This may be caused by abiotic factors such as soil water content, soil temperature, air temperature, etc. We sampled surface-level soil, which may be more vulnerable to abiotic environmental changes and may in turn widely affect sub-surface microbial communities.
+
+**ADDITIONAL COMMENT**: I think the DESeq2 step is introducing "bias" of some sort because I am forced to choose either month or soil type during normalization step. I am not familiar enough with how the DESeq2 step performs the variance stabilized transformation, so I don't know how that is affecting downstream analyses. I think if I had chosen soil type instead in the normalization step, then I might be seeing signficant differences between the soil types, rather than months. To test this, I am going to try running the DESeq2 step again with a different variable input and then get to this point of running PERMANOVA on gDNA-only samples.
+
+### DESeq2: PERMANOVA/adonis of cDNA communities only
+
+```{r}
+# create variable that holds the gDNA samples
+cDNA_wanted <- c("cDNA")
+
+# transform our vst counts table so that sample names are in rows and ASVs are in columns
+bact_vst_trans_counts_table_t <- as.data.frame(t(bact_vst_trans_counts_table))
+
+# create a tibble of our vst trans counts to make it easier to merge with the metadata table
+bact_vst_trans_counts_tbl_t <- bact_vst_trans_counts_table_t %>%
+  as_tibble(rownames = "sample")
+
+# create a tibble of our metadata, merge it with vst counts table, then use the variable holding gDNA samples to remove any cDNA samples. We will also remove the metadata columns after we do the cDNA filtering step and convert back to a data frame. 
+cDNA_bact_tbl <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+# new distance matrix of only gDNA
+cDNA_euc_dist <- dist(cDNA_bact_tbl)
+
+cDNA_bray_dist <- vegdist(cDNA_bact_tbl)
+```
+
+Running the anova on cDNA samples subset, looking at the variation between riparian and upland soil communities:
+
+```{r}
+# need to filter our metadata table too
+cDNA_metadata <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+set.seed(777) #don't change this
+anova(betadisper(cDNA_bray_dist, cDNA_metadata$soil)) 
+
+```
+
+We get a p value of 0.06713, which tells us that the centroids of the riparian cDNA community and the upland cDNA community are the same.
+
+```{r}
+adonis2(cDNA_bray_dist ~ cDNA_metadata$soil, permutations = 9999)
+```
+
+Get a P value of 0.0623. No significant difference between the ASV communities of the cDNA community and the upland cDNA community. Let's try comparing months within the cDNA samples.
+
+```{r}
+set.seed(777) #don't change this
+anova(betadisper(cDNA_bray_dist, cDNA_metadata$month)) 
+adonis2(cDNA_bray_dist ~ cDNA_metadata$month, permutations = 9999)
+```
+
+### DESeq2: Re-running normalization with soil as factor rather than month
+
+```{r}
+bact_deseq2_counts <- DESeqDataSetFromMatrix(bact_count_table, colData = bact_sample_info_table, design = ~soil) #first make a DESeq2 object
+
+bact_deseq2_counts_vst <- varianceStabilizingTransformation(bact_deseq2_counts) 
+
+bact_vst2_trans_counts_table <- assay(bact_deseq2_counts_vst) #pulling out the transformed table
+
+euc_dist2 <- dist(t(bact_vst2_trans_counts_table)) #calculating our Euclidiean distance matrix
+euc_clust2 <- hclust(euc_dist2, method="ward.D2")
+plot(euc_clust2)
+#plot previous version to compare
+plot(euc_clust)
+# they look the same
+
+euc_dend2 <- as.dendrogram(euc_clust2, hang=0.1)
+dend_cols2 <- as.character(bact_sample_info_table$color_NA[order.dendrogram(euc_dend2)])
+labels_colors(euc_dend2) <- dend_cols2
+plot(euc_dend2, ylab="VST Euc. dist.") #this changes the look of the cluster slightly but the results are the same
+
+```
+
+```{r}
+bact_vst2_trans_counts_table[bact_vst2_trans_counts_table < 0.0] <- 0.0
+bact_bray_dist2 <- vegdist(t(bact_vst2_trans_counts_table))
+```
+
+```{r}
+set.seed(777) #don't change this
+anova(betadisper(bact_bray_dist2, bact_sample_info_table$soil)) 
+```
+
+We have a significant difference in the variation between the two soil types, which we also had before.
+
+```{r}
+adonis2(bact_bray_dist2 ~ bact_sample_info_table$soil, permutations = 9999)
+```
+
+We also have a signficant result for our PERMANOVA analysis between soils, which matches our findings with the month-based DESeq2 normalized counts from earlier.
+
+```{r}
+set.seed(777) #don't change this
+anova(betadisper(bact_bray_dist2, bact_sample_info_table$month)) 
+adonis2(bact_bray_dist2 ~ bact_sample_info_table$month, permutations = 9999)
+```
+
+**COMMENT ON DESEQ2 METHODS**: so it turns out the numbers are the same regardless if I use "bact_deseq2_counts \<- DESeqDataSetFromMatrix(bact_count_table, colData = bact_sample_info_table, design = \~month)" or "bact_deseq2_counts \<- DESeqDataSetFromMatrix(bact_count_table, colData = bact_sample_info_table, design = \~soil)".
+
+### DESeq2: gDNA-only T-test
+
+Id like to see if I can do a T-test of some kind to determine if there are significant differences specifically between the June riparian gDNA community and the Oct riparian gDNA community, for example.
+
+```{r}
+# filtering to get only gDNA riparian samples
+gDNA_wanted <- c("gDNA")
+soil_wanted <- c("riparian")
+
+gDNA_soil_bact_tbl <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(template %in% gDNA_wanted) %>%
+  filter(soil %in% soil_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+
+gDNA_soil_rip_metadata <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% gDNA_wanted) %>%
+   filter(soil %in% soil_wanted) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+
+
+# T-test of June upland gDNA vs. October upland gDNA
+t.test(specnumber(gDNA_soil_bact_tbl) ~ gDNA_soil_rip_metadata$month)
+```
+
+By default, the Welch two sample t-test assumes that the variances of the two groups of samples are different. We can see if this is true by running an F test and then if the results are significant, we have unequal variances. If the F test is not significant, it tells us that the variances are equal and we should modify our T-test.
+
+```{r}
+# F test for determining if variation is equal
+var.test(specnumber(gDNA_soil_bact_tbl) ~ gDNA_soil_rip_metadata$month, alternative = "two.sided")
+
+# T test with argument to indicate that variations are equal between June and October
+t.test(specnumber(gDNA_soil_bact_tbl) ~ gDNA_soil_rip_metadata$month, var.equal = TRUE)
+```
+
+This tells us that the riparian gDNA samples significantly differ in species number/ASVs between June and October communities. Let's do the same thing with upland samples from gDNA.
+
+```{r}
+# filtering to get only gDNA upland samples
+gDNA_wanted <- c("gDNA")
+soil_wanted <- c("upland")
+
+gDNA_soil_bact_tbl <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(template %in% gDNA_wanted) %>%
+  filter(soil %in% soil_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+
+gDNA_soil_up_metadata <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% gDNA_wanted) %>%
+   filter(soil %in% soil_wanted) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+
+# F-test and T-test of June riparian gDNA vs. October riparian gDNA
+var.test(specnumber(gDNA_soil_bact_tbl) ~ gDNA_soil_up_metadata$month, alternative = "two.sided")
+
+t.test(specnumber(gDNA_soil_bact_tbl) ~ gDNA_soil_up_metadata$month, var.equal = TRUE)
+```
+
+This tells us that the upland gDNA samples significantly differ in species number/ASVs between June and October communities.
+
+### DESeq2: cDNA-only T-test
+
+```{r}
+# filtering to get only cDNA riparian samples
+cDNA_wanted <- c("cDNA")
+soil_wanted <- c("riparian")
+
+cDNA_soil_bact_tbl <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+  filter(soil %in% soil_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+
+cDNA_soil_rip_metadata <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+   filter(soil %in% soil_wanted) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+```
+
+```{r}
+# F test for determining if variation is equal
+var.test(specnumber(cDNA_soil_bact_tbl) ~ cDNA_soil_rip_metadata$month, alternative = "two.sided")
+
+# T test with argument to indicate that variations are equal between June and October
+t.test(specnumber(cDNA_soil_bact_tbl) ~ cDNA_soil_rip_metadata$month, var.equal = TRUE)
+```
+
+```{r}
+# filtering to get only cDNA upland samples
+cDNA_wanted <- c("cDNA")
+soil_wanted <- c("upland")
+
+cDNA_soil_bact_tbl <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+  filter(soil %in% soil_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+
+cDNA_soil_rip_metadata <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+   filter(soil %in% soil_wanted) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+```
+
+```{r}
+# F test for determining if variation is equal
+var.test(specnumber(cDNA_soil_bact_tbl) ~ cDNA_soil_rip_metadata$month, alternative = "two.sided")
+
+# T test with argument to indicate that variations are equal between June and October
+t.test(specnumber(cDNA_soil_bact_tbl) ~ cDNA_soil_rip_metadata$month)
+```
+
+Comparing shannon diversity using a classic T test
+
+```{r}
+# display shannon diversity values
+diversity(cDNA_soil_bact_tbl, index = "shannon")
+# F test for determining if variation is equal
+var.test(diversity(cDNA_soil_bact_tbl, index = "shannon") ~ cDNA_soil_rip_metadata$month, alternative = "two.sided")
+
+# T test with argument to indicate that variations are equal between June and October
+t.test(specnumber(cDNA_soil_bact_tbl) ~ cDNA_soil_rip_metadata$month)
+```
+
+Alternative: compare shannon diversity using Hutcheson's t-test for two diversity indices. This uses the ecolTest package.
+
+```{r}
+# first need to split up my abundance count tables 
+# filtering to get only cDNA upland June samples
+cDNA_wanted <- c("cDNA")
+soil_wanted <- c("upland")
+month_wanted <- c("June")
+
+cDNA_soil_bact_tbl_June <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+  filter(soil %in% soil_wanted) %>%
+  filter(month %in% month_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+# filtering to get only cDNA upland October samples
+month_wanted <- c("October")
+cDNA_soil_bact_tbl_Oct <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+  filter(soil %in% soil_wanted) %>%
+  filter(month %in% month_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+# now run the Hutcheson t test
+Hutcheson_t_test(cDNA_soil_bact_tbl_June, cDNA_soil_bact_tbl_Oct, alternative = "two.sided")
+```
+
+Within cDNA October, how do riparian and upland samples compare?
+
+```{r}
+# filtering to get only cDNA Oct samples
+cDNA_wanted <- c("cDNA")
+month_wanted <- c("October")
+
+cDNA_month_bact_tbl <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+  filter(month %in% month_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+
+cDNA_month_Oct_metadata <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+   filter(month %in% month_wanted) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+```
+
+Comparing species richness
+
+```{r}
+# F test for determining if variation is equal
+var.test(specnumber(cDNA_month_bact_tbl) ~ cDNA_month_Oct_metadata$soil, alternative = "two.sided")
+
+# T test with argument to indicate that variations are equal between riparian and upland
+t.test(specnumber(cDNA_month_bact_tbl) ~ cDNA_month_Oct_metadata$soil)
+```
+
+Comparing shannon diversity using t-test for two diversity indices.
+
+```{r}
+# getting values of shannon diversity index
+diversity(cDNA_month_bact_tbl, index = "shannon")
+# F test for determining if variation of above diversity indices is equal
+var.test(diversity(cDNA_month_bact_tbl, index = "shannon") ~ cDNA_month_Oct_metadata$soil, alternative = "two.sided")
+
+# T test with argument to indicate that variations are equal between riparian and upland
+t.test(diversity(cDNA_month_bact_tbl, index = "shannon"))
+```
+
+Alternative: Comparing shannon diversity using Hutcheson's t-test for two diversity indices.
+
+```{r}
+# first need to split up my abundance count tables 
+# filtering to get only cDNA October riparian samples
+cDNA_wanted <- c("cDNA")
+month_wanted <- c("October")
+soil_wanted <- c("riparian")
+
+cDNA_month_bact_tbl_rip <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+  filter(month %in% month_wanted) %>%
+  filter(soil %in% soil_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+# filtering to get only cDNA October upland samples
+soil_wanted <- c("upland")
+
+cDNA_month_bact_tbl_up <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(template %in% cDNA_wanted) %>%
+  filter(month %in% month_wanted) %>%
+  filter(soil %in% soil_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+# now run the Hutcheson t test
+Hutcheson_t_test(cDNA_month_bact_tbl_rip, cDNA_month_bact_tbl_up, alternative = "two.sided")
+```
+
+Seems like the Hutcheson result is always giving me a significant result in that the diversity of my two groups are significantly different, even when the t-test of the same group does not result in a significant result; specifically in situation where the F -test shows significant variation in the spread of data which means I can't really trust the T test results.
+
+Looking at the diversity of two groups that appear similar in diversity based on the shannon plot: 10RcDNA and 10RgDNA.
+
+First see how these groups compare with a typical t-test
+
+```{r}
+# filtering to get only Oct riparian samples
+month_wanted <- c("October")
+soil_wanted <- c("riparian")
+
+cDNA_Oct_rip_tbl <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(soil %in% soil_wanted) %>%
+  filter(month %in% month_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+
+Oct_rip_metadata <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  filter(soil %in% soil_wanted) %>%
+   filter(month %in% month_wanted) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+# SPECIES RICHNESS T TEST
+# F test for determining if variation is equal
+var.test(specnumber(cDNA_Oct_rip_tbl) ~ Oct_rip_metadata$template, alternative = "two.sided")
+# not a significant result for variances, which is what I'd expect since they have close/similar spreads
+
+# T test with argument to indicate that variations are equal between gDNA and cDNA
+t.test(specnumber(cDNA_Oct_rip_tbl) ~ Oct_rip_metadata$template)
+# not significant on T-test
+
+# SHANNON DIVERSITY T TEST
+# F test for determining if variation is equal
+var.test(diversity(cDNA_Oct_rip_tbl) ~ Oct_rip_metadata$template, alternative = "two.sided")
+# not significant
+
+# T test with argument to indicate that variations are equal between gDNA and cDNA
+t.test(diversity(cDNA_Oct_rip_tbl) ~ Oct_rip_metadata$template)
+# p = 0.04098, significant difference of a = 0.05 but not if a = 0.01
+
+# HUTCHESON T TEST of DIVERSITY
+month_wanted <- c("October")
+soil_wanted <- c("riparian")
+template_wanted <- c("gDNA")
+
+Oct_rip_tbl_gDNA <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(soil %in% soil_wanted) %>%
+  filter(month %in% month_wanted) %>%
+  filter(template %in% template_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+template_wanted <- c("cDNA")
+
+Oct_rip_tbl_cDNA <- bact_sample_info_table  %>%
+  as_tibble(rownames = "sample") %>%
+  inner_join(., bact_vst_trans_counts_tbl_t, by="sample") %>%
+  filter(soil %in% soil_wanted) %>%
+  filter(month %in% month_wanted) %>%
+  filter(template %in% template_wanted) %>%
+  select(-month, -soil, -template, -replicate, -flux, 
+         -longitude, -latitude, -soil.temp, -monthsoil,
+         -full_name, -color_soil) %>%
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+Hutcheson_t_test(Oct_rip_tbl_gDNA, Oct_rip_tbl_cDNA, alternative = "two.sided")
+# p value < 2.2e-16
+
+```

@@ -1,0 +1,715 @@
+---
+title: "RBC 16S analysis: microbial community summary"
+output: html_document
+---
+
+Written by Delaney Beals \| Date created: October 17, 2023 \| Date most recent edit: December 11, 2023
+
+Resource: <https://astrobiomike.github.io/amplicon/dada2_workflow_ex#taxonomic-summaries>
+
+# Summary figures for RBC 16S amplicon sequencing data
+
+The objective is to create summary figures of the microbial taxa that are present in my data that show the general trends of what microbes are in each sample. These will then feed into more specific pairwise comparisons to where I see if there is any significant difference in the microbial communities when we look at June vs. October, riparian vs. upland soil, gDNA vs. cDNA, etc. These figures will be a continuation of the summary figures that we make towards the end of the official "June_Oct_16S_MERGE_analysis" pipeline.
+
+Here we will use the phyloseq package to do most of the work. My understanding of how this works is that from our processing and analysis pipeline we have generated three things:
+
+-   raw count table: samples x ASVs = \# of times each ASV was counted in each sample
+
+-   taxa table: ASVs x taxonomic classification = what each ASV corresponds to in terms of Kingdom, Phylum, etc.
+
+-   metadata table: any additional information about our samples such as month, soil type, etc.
+
+Then with the phyloseq package we will combine all three of these tables into one phyloseq object from which we can pull out specific information and perform transformations and whatnot while keeping all the information linked in the correct way.
+
+### A note on relative abundance
+
+For most, if not all, of the following figures we are showing the relative abundance of different ASVs (or groups of ASVs) for each sample. Relative abundance is a method of normalization, so we will be starting with raw counts and then calculating relative abundance from there. To do that, we tally up all the counts from all ASVs found in a single sample, then calculate the fraction that each ASV makes up of that summed total. Basically, we are calculating what percent each ASV makes up each sample. The **key point** is that in order to keep things reproducible, we need to make sure that we are using ALL of the ASVs available for each sample when we calculate the total. Further down we will get into filtering/subsetting data into categories and then calculating relative abundance, but that runs the risk of us accidentally leaving out some ASV counts that would affect the total ASV number. There are two ways I am going to use to make sure that doesn't happen:
+
+1.  when I am filtering first and then calculating relative abundance, I will compare the total counts of my filtered table to my original raw counts table and only perform the relative abundance calculation when both those tables are identical in sums. The way to do this is to create a category for "unclassified" or "other" taxa each time I perform a filtering step so that those ASVs are still counted in my final numbers, even though I don't necessarily care what taxa those ASVs belong to.
+
+2.  alternatively, I can create a new phyloseq object from the original that transforms the count table to relative abundance values before doing anything else. This way, I can filter and subset by taxa of interest as much as I want and the actual values for each ASV won't change, as those were calculated when I had all possible ASVs included. However, I might run into issues down the line because some functions require integers (i.e. non-transformed counts) as input, but I have not yet run into this issue.
+
+The first part of this notebook will use the strategy outline in point 1, and then I will see how using a pre-transformed relative abundance count table in my phyloseq object looks in part 2.
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse) 
+library(phyloseq)
+library(vegan) 
+library(DESeq2) 
+library(dendextend) 
+library(viridis) 
+library(ggplot2)
+
+# double check what packages are installed & loaded
+(.packages())
+```
+
+## Raw count phyloseq
+
+```{r}
+# Load in data
+# Need to specify row.names = 1 so that sample names do not appear as their own column. Instead they are the row headings (names).
+bact_count_table <- read.table("June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+
+bact_taxa_table <- as.matrix(read.table("June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
+
+bact_sample_info_table <- read.table("June_Oct_16S_MERGE_metadata.csv", header = T, row.names = 1, sep = ",") 
+
+# using the phyloseq package, we will combine our three tables into one phyloseq object
+otu_table <- phyloseq::otu_table(bact_count_table, taxa_are_rows=T)
+tax_table <- phyloseq::tax_table(bact_taxa_table)
+sample_data <- phyloseq::sample_data(bact_sample_info_table)
+
+# now generate the phyloseq object
+ASV_physeq <- phyloseq(otu_table, tax_table, sample_data)
+```
+
+### Kingdom subset
+
+We are primarily interested in the Bacteria kingdom of taxa, which the majority of our ASVs likely are. We are going to first subset all our counts table into Bacteria and non-Bacteria. When I look at the taxa table, I can see that some ASVs do not have any taxonomy assigned, not even to the first level of Kingdom, so these will need to go into their own "unclassified" group to keep our ASV totals consistent.
+
+The **tax_glom** function from phyloseq merges species that have the same taxonomy at a certain taxonomic rank. Column/ranks to the right of the rank chose to use for agglomeration will be replace with NA because they are effectively meaningless following agglomeration.
+
+```{r}
+# using phyloseq to make a count table that has summed all ASVs that were in the same kingdom
+king_counts_tab <- otu_table(tax_glom(ASV_physeq, taxrank="Kingdom")) 
+
+# making a vector of kingdom names to set as row names
+rownames(king_counts_tab) <- as.vector(as.vector(tax_table(tax_glom(ASV_physeq, taxrank="Kingdom"))[,1]))
+```
+
+We also have to account for sequences that weren't assigned any taxonomy even at the kingdom level these came into R as 'NAs' in the taxonomy table, but their counts are still in the count table so we can get that value for each sample by subtracting the column sums of this new table (that has everything that had a kingdom assigned to it) from the column sums of the starting count table (that has all representative sequences).
+
+```{r}
+unclassified_tax_counts_king <- colSums(bact_count_table) - colSums(king_counts_tab)
+
+# and we'll add this row to our kingdom count table:
+king_and_unidentified_counts_tab <- rbind(king_counts_tab, "Unclassified"=unclassified_tax_counts_king)
+
+# calculate proportions
+major_king_proportions_tab <- apply(king_and_unidentified_counts_tab, 2, function(x) x/sum(x)*100)
+
+major_king_proportions_tab_t <- t(major_king_proportions_tab)
+
+write.csv(major_king_proportions_tab_t, "king_prop.csv", sep = "\t", quote = F, col.names = NA)
+```
+
+Looking at the table we created, it seems that the Bacteria kingdom is where most of the ASVs we found in all of our samples is coming from, followed by the Unclassified category.
+
+This is still too broad of information and can be hard to identify trends just based on kingdom-level taxonomic classification. Therefore, I don't think it's worth it to calculate relative abundances just yet. We can subset our counts further based on lower taxonomic groups, including looking specifically at the phyla that are within the bacteria kingdom, for example.
+
+### Phyla in Bacteria subset
+
+First we need to group all the counts that were assigned to the same phylum and then update our table to reflect the name of the phylum rather than the ASV identifier.
+
+```{r}
+# making count table broken down by phylum
+phyla_counts_tab <- otu_table(tax_glom(ASV_physeq, taxrank="Phylum"))
+
+# making a table that holds the kingdom and phylum level info for each ASV
+phy_tax_king_tab <- tax_table(tax_glom(ASV_physeq, taxrank="Phylum")) 
+phy_tax_tab <- data.frame("Kingdom"=phy_tax_king_tab[,1], "Phylum"=phy_tax_king_tab[,2], row.names = row.names(phy_tax_king_tab))
+
+# changing the row names like above so that they correspond to the taxonomy, rather than an ASV identifier
+rownames(phyla_counts_tab) <- as.vector(phy_tax_tab$Phylum) 
+```
+
+```{r}
+# Accounting for ASVs that were in Bacteria but not assigned a phylum level. 
+unclassified_tax_counts_phyla <- colSums(bact_count_table) - colSums(phyla_counts_tab)
+
+# and we'll add this row to our phyla count table:
+phyla_and_unidentified_counts_tab <- rbind(phyla_counts_tab, "Unclassified_Phylum"=unclassified_tax_counts_phyla)
+```
+
+Now we want to look at just the phyla that are within the Bacteria kingdom.
+
+```{r}
+# making a vector of just the Bacteria phyla
+bact_phyla_vec <- as.vector(phy_tax_tab[phy_tax_tab$Kingdom == "Bacteria", "Phylum"])
+
+# making a table of the counts of the Bacterial phyla
+bact_phyla_counts_tab <- phyla_counts_tab[row.names(phyla_counts_tab) %in% bact_phyla_vec, ] 
+```
+
+There are also possibly some some sequences that were resolved to the level of Bacteria, but not any further, and therefore would be missing from our phylum table we can find the sum of them by subtracting the Bacterial phyla count table from just the Bacteria row from the original kingdom-level count table
+
+```{r}
+bact_no_phy_counts <- king_and_unidentified_counts_tab[row.names(king_and_unidentified_counts_tab) %in% "Bacteria", ] - colSums(bact_phyla_counts_tab) # These values will be added to our counts table as "Unresolved Bacteria"
+
+# since the counts assigned "Bacteria" are all accounted for (as they are all further subsetted within the phylum table, including the unidentified Bacteria), let's make a table of our kingdom counts for everything other than bacteria
+non_bact <- king_and_unidentified_counts_tab[-1,]
+
+# now combining the tables:
+phyla_taxa_counts_tab <- rbind(non_bact, bact_phyla_counts_tab, "Unresolved_Bacteria"= bact_no_phy_counts)
+```
+
+To check we didn't miss any other sequences, we can compare the column sums of our new tables to the column sums of the original raw count table to see if they are the same. If "TRUE", we know nothing fell through the cracks and we can confidently calculate relative abundance.
+
+```{r}
+# Starting with just the kingdom classification table
+identical(colSums(bact_count_table), colSums(king_and_unidentified_counts_tab)) # TRUE
+
+# This is our combined table of non-bacteria kingdoms and the bacteria kingdom broken into different phyla (including Bacteria that didn't have a phylum assignment)
+identical(colSums(bact_count_table), colSums(phyla_taxa_counts_tab)) # TRUE
+
+# calculate relative abundance in PERCENT
+major_phyla_proportions_tab <- apply(phyla_taxa_counts_tab, 2, function(x) x/sum(x)*100)
+```
+
+We have calculated the relative abundance of our table that has the phyla within the Bacteria kingdom as well as categories for any ASVs that are not assigned phyla within the Bacteria kingdom. We can use this table to generate some summary figures. If we check the dimensions of this table at this point,
+
+```{r}
+dim(major_phyla_proportions_tab)
+```
+
+we see there are currently 40 rows, which might be a little busy for a summary figure. Many of these taxa make up a very small percentage, so we're going to filter some out. This is a completely arbitrary decision solely to ease visualization and interpretation, entirely up to your data and you. Here, we'll only keep rows (taxa) that make up greater than 1% in any individual sample. Those that got filtered out in this step will be kept in their own category.
+
+```{r}
+temp_filt_major_phyla_proportions_tab <- as.data.frame(major_phyla_proportions_tab[apply(major_phyla_proportions_tab, 1, max) > 1, ])
+# how many are above 1%
+dim(temp_filt_major_phyla_proportions_tab) 
+# now we have 15, much more manageable for an overview figure
+
+# though each of the filtered taxa made up less than 1% alone, together they may add up and should still be included in the overall summary so we're going to add a row called "Other" that keeps track of how much we filtered out (which will also keep our totals at 100%)
+filtered_phyla <- colSums(major_phyla_proportions_tab) - colSums(temp_filt_major_phyla_proportions_tab)
+
+filt_major_phyla_proportions_tab <- rbind(temp_filt_major_phyla_proportions_tab, "Other (low %)"=filtered_phyla)
+```
+
+Now that we have a nice proportions table ready to go, we can make some figures with it. First we need to get the information ready for plotting.
+
+```{r}
+# first let's make a copy of our table that's safe for manipulating
+phyla_tax <- filt_major_phyla_proportions_tab
+
+# and add a column of the taxa names so that it is within the table, rather than just as row names (this makes working with ggplot easier)
+phyla_tax$Major_Taxa <- row.names(phyla_tax)
+
+# now we'll transform the table into narrow, or long, format (also makes plotting easier)
+phyla_tax_long <- pivot_longer(phyla_tax, !Major_Taxa, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+
+# now we want a table metadata of each sample to merge into our plotting table so we can use that more easily in our plotting function. Here we're making a new table by pulling what we want from the sample information table
+sample_info_for_merge<-data.frame("Sample"=row.names(bact_sample_info_table), "month"=bact_sample_info_table$month, "soil"=bact_sample_info_table$soil, "template"=bact_sample_info_table$template, "replicate"=bact_sample_info_table$replicate, "monthsoil"=bact_sample_info_table$monthsoil, stringsAsFactors=F)
+
+# and here we are merging this table with the plotting table we just made
+phyla_tax_info <- merge(phyla_tax_long, sample_info_for_merge)
+```
+
+#### Figures
+
+One common way to look at this is with stacked bar charts for each taxon per sample:
+
+```{r}
+ggplot(phyla_tax_info, aes(x=Sample, y=Proportion, fill=Major_Taxa)) +
+  geom_bar(width=0.6, stat="identity", color = "black") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90, vjust=0.4, hjust=1), legend.title=element_blank()) +
+  labs(x="Sample", y="% of 16S rRNA gene copies recovered", title="All samples")
+```
+
+We can also simply the bar plot slightly by pooling three technical replicates, but this just sums the ratios for each taxa, giving us a total of 300% instead of 100%.
+
+```{r}
+ggplot(phyla_tax_info, aes(x=replicate, y=Proportion, fill=Major_Taxa)) +
+  geom_bar(width=0.6, stat="identity", color = "black") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90, vjust=0.4, hjust=1), legend.title=element_blank()) +
+  labs(x="Sample", y="% of 16S rRNA gene copies recovered", title="All samples")
+```
+
+Looks like Proteobacteria is making up a lot of the Bacterial phyla.
+
+We can also represent this same information in a box plot. This time, only the colors are the same for the replicates, we aren't pooling or summing the relative abundances for technical replicates.
+
+```{r}
+ggplot(phyla_tax_info, aes(Major_Taxa, Proportion)) +
+  geom_jitter(aes(color=factor(replicate)), size=2.5, width=0.15, height=0) +
+  geom_boxplot(fill=NA, outlier.color=NA) + 
+  theme_bw() +  
+  theme(axis.text.x=element_text(size=12, angle=45, hjust=1), legend.title=element_blank()) + 
+  labs(x="Major Taxa", y="% of 16S rRNA gene copies recovered", title="All samples")
+
+
+# reordering the labels
+ex <- phyla_tax_info %>%
+  mutate(Major_Taxa = fct_relevel(Major_Taxa,  "Unclassified", "Other (low %)","Verrucomicrobia","Planctomycetes",   "Nitrospirae", "Latescibacteria", "Gemmatimonadetes", "Firmicutes", "candidate_division_WPS-1", "Chloroflexi", "Bacteroidetes",   "Actinobacteria", "Acidobacteria", "Proteobacteria","Unresolved_Bacteria", "Archaea"))
+
+phyla_tax_info_reorder <- ex %>%
+  mutate(template = fct_relevel(template,  "gDNA","cDNA"))
+
+my_theme_grid <- theme_bw() +
+        theme(text=element_text(size = 12), 
+        axis.text.x=element_text(size=10, color = "black"), 
+        axis.text.y = element_text(size=10, color = "black"),
+        title = element_text(size = 10, color = "black"), 
+        legend.title=element_blank()
+        )
+                                 
+# same plot but horizontal and with new label order
+ab <- ggplot(phyla_tax_info_reorder, aes(Proportion, Major_Taxa)) +
+  geom_jitter(aes(color=factor(monthsoil), shape=factor(template)), 
+              size=2.5, width=0.15, height=0) +
+  my_theme_grid +
+  scale_x_continuous(breaks = seq(0,100, by = 10)) +
+  labs(x="% of 16S rRNA gene copies recovered", y="",title="Major taxa and Bacterial phyla")
+
+print(ab)
+```
+
+Again, we can see that most of the ASVs are assigned as Proteobacteria, so let's look further into this phylum by doing similar filtering to what we did earlier.
+
+### Classes in Proteobacteria
+
+First will agglomerate the count and taxa table to the Class level.
+
+```{r}
+# making count table broken down by class
+class_counts_tab <- otu_table(tax_glom(ASV_physeq, taxrank="Class")) 
+
+# making a table that holds the phylum and class level info for each ASV
+class_tax_phy_tab <- tax_table(tax_glom(ASV_physeq, taxrank="Class")) 
+class_tax_tab <- data.frame("Phylum"=class_tax_phy_tab[,2], "Class"=class_tax_phy_tab[,3], row.names = row.names(class_tax_phy_tab))
+
+# changing the row names like above so that they correspond to the taxonomy, rather than an ASV identifier
+rownames(class_counts_tab) <- as.vector(class_tax_tab$Class) 
+```
+
+Because we are getting down even further in taxonomy, we are going to drop the higher-level-only classified ASVs so that our figures only show classes. This is in contrast to the previous figures where we showed a mix of taxonomic levels in the figures.
+
+We will look specifically at the classes that are within the Proteobacteria phylum, since all of the reported methanotrophs and methylotrophs are members of Proteobacteria.
+
+```{r}
+# making a vector of just the Proteobacteria classes
+proteo_classes_vec <- as.vector(class_tax_tab[class_tax_tab$Phylum == "Proteobacteria", "Class"])
+
+# making a table of the counts of the Proteobacterial classes
+proteo_class_counts_tab <- class_counts_tab[row.names(class_counts_tab) %in% proteo_classes_vec, ] 
+
+# taking into account ASVs that were assigned Proteobacteria but not any further
+proteo_no_class_counts <- 
+  phyla_taxa_counts_tab[row.names(phyla_taxa_counts_tab) %in% "Proteobacteria", ] - colSums(proteo_class_counts_tab)
+```
+
+```{r}
+# since the counts assigned "Proteobacteria" are all accounted for (as they are all further subsetted within the class table), let's make a table of our  counts for everything other than proteobacteria and just call that "non-proteobacteria" since we don't really care what it is. 
+non_proteo <- colSums(phyla_and_unidentified_counts_tab[-1,])
+
+# now combining the tables:
+major_proteo_counts_tab <- rbind("Non_Proteobacteria" = non_proteo,
+                               proteo_class_counts_tab,
+                               "Unresolved_Proteobacteria"= 
+                               proteo_no_class_counts)
+
+# check to make sure we aren't missing any sequences from our original raw count table. 
+identical(colSums(major_proteo_counts_tab), colSums(bact_count_table)) # TRUE
+
+# Calculate relative abundance in PERCENT
+major_proteo_proportions_tab <- apply(major_proteo_counts_tab, 2, function(x) x/sum(x)*100)
+
+# if we check the dimensions of this table at this point
+dim(major_proteo_proportions_tab)
+# we see there are currently 8 rows, which is fine for plotting. 
+```
+
+Reformat our proportions/relative abundance table for plotting.
+
+```{r}
+# first let's make a copy of our table that's safe for manipulating
+proteo_tax <- as.data.frame(major_proteo_proportions_tab)
+
+# and add a column of the taxa names so that it is within the table, rather than just as row names (this makes working with ggplot easier)
+proteo_tax$Classes <- row.names(proteo_tax)
+
+# now we'll transform the table into narrow, or long, format (also makes plotting easier)
+proteo_tax_long <- pivot_longer(proteo_tax, !Classes, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+
+# now we want a table metadata of each sample to merge into our plotting table so we can use that more easily in our plotting function. Here we're making a new table by pulling what we want from the sample information table
+sample_info_for_merge <- data.frame(
+  "Sample"=row.names(bact_sample_info_table),
+  "month"=bact_sample_info_table$month,
+  "soil"=bact_sample_info_table$soil,
+  "template"=bact_sample_info_table$template,
+  "replicate"=bact_sample_info_table$replicate,
+  "monthsoil"=bact_sample_info_table$monthsoil,
+  stringsAsFactors=F)
+
+# and here we are merging this table with the plotting table we just made
+proteo_tax_info <- merge(proteo_tax_long, sample_info_for_merge)
+```
+
+#### Figures
+
+Starting with a stacked bar chart.
+
+```{r}
+ggplot(proteo_tax_info, 
+       aes(x=Sample, y=Proportion, fill=Classes)) +
+  geom_bar(width=0.6, stat="identity", color = "black") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90, vjust=0.4, hjust=1), legend.title=element_blank()) +
+  labs(x="Sample", y="% of 16S rRNA gene copies recovered", title="All samples")
+
+# with pooled technical replicates
+ggplot(proteo_tax_info, 
+       aes(x=replicate, y=Proportion, fill=Classes)) +
+  geom_bar(width=0.6, stat="identity", color = "black") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90, vjust=0.4, hjust=1), legend.title=element_blank()) +
+  labs(x="Sample", y="% of 16S rRNA gene copies recovered", title="All samples")
+```
+
+Box plot of the same information.
+
+```{r}
+ggplot(proteo_tax_info, aes(Classes, Proportion)) +
+  geom_jitter(aes(color=factor(replicate)), size=2.5, width=0.15, height=0) +
+  geom_boxplot(fill=NA, outlier.color=NA) + 
+  theme_bw() +  
+  theme(axis.text.x=element_text(size=12, angle=45, hjust=1), legend.title=element_blank()) + 
+  labs(x="Major Taxa", y="% of 16S rRNA gene copies recovered", title="All samples")
+
+# reordering the labels
+proteo_tax_info_reorder <- proteo_tax_info %>%
+  mutate(Classes = fct_relevel(Classes,  "Non_Proteobacteria","Unresolved_Proteobacteria", "Oligoflexia","Hydrogenophilalia","Gammaproteobacteria",   "Deltaproteobacteria", "Betaproteobacteria", "Alphaproteobacteria"))
+
+proteo_tax_info_reorder1 <- proteo_tax_info_reorder %>%
+  mutate(template = fct_relevel(template,  "gDNA","cDNA"))
+
+# same plot but horizontal and with new label order
+ba <- ggplot(proteo_tax_info_reorder1, aes(Proportion, Classes)) +
+  geom_jitter(aes(color=factor(monthsoil), shape=factor(template)), 
+              size=2.5, width=0.15, height=0) +
+  my_theme_grid +
+  scale_x_continuous(breaks = seq(0,100, by = 10)) +
+  labs(x="% of 16S rRNA gene copies recovered", y = "", title = "Major classes within Proteobacteria")
+
+print(ba)
+```
+
+```{r}
+# stack two grids
+grid.arrange(ab, ba, ncol = 1)
+```
+
+Since the non-proteobacteria category accounts for a lot of the ASV counts, we can create a table that leaves that out, so we can just focus on the relative abundances of the Proteobacteria.
+
+```{r}
+# making a copy of our proportions table that doesn't include the "non-proteobacteria" row
+just_proteo <- as.data.frame(major_proteo_proportions_tab[-1,])
+
+# add a column of the taxa names so that it is within the table, rather than just as row names (this makes working with ggplot easier)
+just_proteo$Classes <- row.names(just_proteo)
+
+# transform the table into narrow, or long, format (also makes plotting easier)
+just_proteo_long <- pivot_longer(just_proteo, !Classes, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+
+# merge this table with out metadata table
+just_proteo_info <- merge(just_proteo_long, sample_info_for_merge)
+```
+
+Remake figures with Proteobacteria-only table
+
+```{r}
+ggplot(just_proteo_info, 
+       aes(x=Sample, y=Proportion, fill=Classes)) +
+  geom_bar(width=0.6, stat="identity", color = "black") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90, vjust=0.4, hjust=1), legend.title=element_blank()) +
+  labs(x="Sample", y="% of 16S rRNA gene copies recovered", title="All samples")
+
+ggplot(just_proteo_info, aes(Classes, Proportion)) +
+  geom_jitter(aes(color=factor(replicate)), size=2.5, width=0.15, height=0) +
+  geom_boxplot(fill=NA, outlier.color=NA) + 
+  theme_bw() +  
+  theme(axis.text.x=element_text(size=12, angle=45, hjust=1), legend.title=element_blank()) + 
+  labs(x="Major Taxa", y="% of 16S rRNA gene copies recovered", title="All samples")
+```
+
+Let's also look at a bubble plot to see a further breakdown among our sample characteristics.
+
+```{r}
+colours = c("#21ADFF","#4FFF00")
+
+ggplot(just_proteo_info, aes(x = Sample, y = Classes)) + 
+  geom_point(aes(size = Proportion, fill = soil), 
+             alpha = 5, shape = 21) + 
+  scale_size_continuous(limits = c(0.00001, 10), range = c(1,10),
+                        breaks = c(0.1, 1, 10)) +
+  facet_grid(template ~ month, margins = T) +
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
+  scale_fill_manual(values = colours) +
+  theme_bw() +
+  theme(text = element_text(size = 10), 
+        axis.text.x = element_text(size = 10, 
+                                   color = "black", 
+                                   angle = -90, 
+                                   hjust = 0), 
+        axis.text.y = element_text(size = 10, 
+                                   color = "black")
+        )
+```
+
+### Gammaproteobacteria
+
+I want to look more into what's going on with October upland cDNA replicate 3, so I am going to look at the orders within Gammaproteobacteria.
+
+First we need to group all the counts that were assigned to the same class and then update our table to reflect the name of the class rather than the ASV identifier.
+
+```{r}
+# making count table broken down by class
+class_counts_tab <- otu_table(tax_glom(ASV_physeq, taxrank="Class")) 
+
+# making a table that holds the phylum and class level info for each ASV
+class_tax_phy_tab <- tax_table(tax_glom(ASV_physeq, taxrank="Class")) 
+class_tax_tab <- data.frame("Phylum"=class_tax_phy_tab[,2], "Class"=class_tax_phy_tab[,3], row.names = row.names(class_tax_phy_tab))
+
+# changing the row names like above so that they correspond to the taxonomy, rather than an ASV identifier
+rownames(class_counts_tab) <- as.vector(class_tax_tab$Class) 
+```
+
+```{r}
+# Accounting for ASVs that were not assigned a class level. 
+unclassified_tax_counts_class <- colSums(bact_count_table) - colSums(class_counts_tab)
+
+# and we'll add this row to our class count table:
+class_and_unidentified_counts_tab <- rbind(class_counts_tab, "No_Class_assigned"=unclassified_tax_counts_class)
+
+# check that we are on the right track
+identical(colSums(bact_count_table), colSums(class_and_unidentified_counts_tab))
+```
+
+Now we want to look at just the classes that are within the gammaproteobacterial class.
+
+```{r}
+# making count table broken down by order
+order_counts_tab <- otu_table(tax_glom(ASV_physeq, taxrank="Order")) 
+
+# making a table that holds the class and order level info for each ASV
+order_tax_class_tab <- tax_table(tax_glom(ASV_physeq, taxrank="Order")) 
+
+order_tax_tab <- data.frame("Class"=order_tax_class_tab[,3], "Order"=order_tax_class_tab[,4], row.names = row.names(order_tax_class_tab))
+
+# changing the row names like above so that they correspond to the taxonomy, rather than an ASV identifier
+rownames(order_counts_tab) <- as.vector(order_tax_tab$Order) 
+```
+
+Because we are getting down even further in taxonomy, we are going to drop the higher-level-only classified ASVs so that our figures only show orders.
+
+We will look specifically at the classes that are within the Gammaproteobacteria class
+
+```{r}
+# making a vector of just the Gammaproteobacteria orders
+gamma_orders_vec <- as.vector(order_tax_tab[order_tax_tab$Class == "Gammaproteobacteria", "Order"])  
+
+# making a table of the counts of the Gammaproteobacteria orders
+gamma_order_counts_tab <- order_counts_tab[row.names(order_counts_tab) %in% gamma_orders_vec, ]   
+
+# taking into account ASVs that were assigned Gammaproteobacteria but not any further
+gamma_no_order_counts <- class_and_unidentified_counts_tab[row.names(class_and_unidentified_counts_tab) %in% "Gammaproteobacteria", ] - colSums(gamma_order_counts_tab)
+
+# since the counts assigned "Gammaproteobacteria" are all accounted for (as they are all further subsetted within the phylum table, including the unidentified Gammaproteobacteria), let's make a table of our class counts for everything other than gamma
+non_gamma <- class_and_unidentified_counts_tab[-2,]
+non_gamma_count <- colSums(non_gamma)
+
+# now combining the tables:
+order_taxa_counts_tab <- rbind("Other" = non_gamma_count, gamma_order_counts_tab, "Unresolved_Gammaproteobacteria"= gamma_no_order_counts)
+
+identical(colSums(bact_count_table), colSums(order_taxa_counts_tab))
+
+major_order_proportions_tab <- apply(order_taxa_counts_tab, 2, function(x) x/sum(x)*100)
+```
+
+```{r}
+# first let's make a copy of our table that's safe for manipulating
+gamma_tax <- as.data.frame(major_order_proportions_tab)
+
+# and add a column of the taxa names so that it is within the table, rather than just as row names (this makes working with ggplot easier)
+gamma_tax$Order <- row.names(gamma_tax)
+
+# now we'll transform the table into narrow, or long, format (also makes plotting easier)
+gamma_tax_long <- pivot_longer(gamma_tax, !Order, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+
+# now we want a table metadata of each sample to merge into our plotting table so we can use that more easily in our plotting function. Here we're making a new table by pulling what we want from the sample information table
+sample_info_for_merge <- data.frame("Sample"=row.names(bact_sample_info_table),
+                                  "month"=bact_sample_info_table$month,
+                                  "soil"=bact_sample_info_table$soil,
+                                  "template"=bact_sample_info_table$template,
+                                  "replicate"=bact_sample_info_table$replicate,
+                                  stringsAsFactors=F)
+
+# and here we are merging this table with the plotting table we just made
+gamma_tax_info <- merge(gamma_tax_long, sample_info_for_merge)
+```
+
+```{r}
+ggplot(gamma_tax_info, aes(Order, Proportion)) +
+  geom_jitter(aes(color=factor(replicate)), size=2.5, width=0.15, height=0) +
+  geom_boxplot(fill=NA, outlier.color=NA) + 
+  theme_bw() +  
+  theme(axis.text.x=element_text(size=12, angle=45, hjust=1), legend.title=element_blank()) + 
+  labs(x="Gammaproteobacteria orders", y="% of 16S rRNA gene copies recovered", title="All samples")
+
+# switching axes
+ggplot(gamma_tax_info, aes(Proportion, Order)) +
+  geom_jitter(aes(color=factor(replicate)), size=2.5, width=0.15, height=0) +
+  geom_boxplot(fill=NA, outlier.color=NA) + 
+  theme_bw() +  my_theme +
+  theme(axis.text.x=element_text(size=12), legend.title=element_blank()) + 
+  labs(x="% of 16S rRNA gene copies recovered" , y= "Gammaproteobacteria orders")
+```
+
+### Methylococcales
+
+```{r}
+# Accounting for ASVs that were not assigned a order level. 
+unclassified_tax_counts_order <- colSums(bact_count_table) - colSums(order_counts_tab)
+
+# and we'll add this row to our class count table:
+order_and_unidentified_counts_tab <- rbind(order_counts_tab, "No_Order_assigned"=unclassified_tax_counts_order)
+
+# check that we are on the right track
+identical(colSums(bact_count_table), colSums(order_and_unidentified_counts_tab))
+```
+
+```{r}
+# making count table broken down by family
+fam_counts_tab <- otu_table(tax_glom(ASV_physeq, taxrank="Family")) 
+
+# making a table that holds the order and family level info for each ASV
+fam_tax_order_tab <- tax_table(tax_glom(ASV_physeq, taxrank="Family")) 
+
+fam_tax_tab <- data.frame("Order"=fam_tax_order_tab[,4], "Family"=fam_tax_order_tab[,5], row.names = row.names(fam_tax_order_tab))
+
+# changing the row names like above so that they correspond to the taxonomy, rather than an ASV identifier
+rownames(fam_counts_tab) <- as.vector(fam_tax_tab$Family)
+```
+
+```{r}
+# making a vector of just the Methylococcales families
+meth_fam_vec <- as.vector(fam_tax_tab[fam_tax_tab$Order == "Methylococcales", "Family"])  
+
+# making a table of the counts of the Gammaproteobacteria orders
+meth_fam_counts_tab <- fam_counts_tab[row.names(fam_counts_tab) %in% meth_fam_vec, ]   
+
+# taking into account ASVs that were assigned Gammaproteobacteria but not any further
+meth_no_fam_counts <- order_and_unidentified_counts_tab[row.names(order_and_unidentified_counts_tab) %in% "Methylococcales", ] - colSums(meth_fam_counts_tab)
+
+# since the counts assigned "Gammaproteobacteria" are all accounted for (as they are all further subsetted within the phylum table, including the unidentified Gammaproteobacteria), let's make a table of our class counts for everything other than gamma
+non_meth <- order_and_unidentified_counts_tab[-7,]
+non_meth_count <- colSums(non_meth)
+
+# now combining the tables:
+fam_taxa_counts_tab <- rbind("Other" = non_meth_count, meth_fam_counts_tab, "Unresolved_Methylococcales"= meth_no_fam_counts)
+
+identical(colSums(bact_count_table), colSums(fam_taxa_counts_tab))
+
+major_family_proportions_tab <- apply(fam_taxa_counts_tab, 2, function(x) x/sum(x)*100)
+
+```
+
+```{r}
+# first let's make a copy of our table that's safe for manipulating
+meth_tax <- as.data.frame(major_family_proportions_tab)
+
+# and add a column of the taxa names so that it is within the table, rather than just as row names (this makes working with ggplot easier)
+meth_tax$Family <- row.names(meth_tax)
+
+# now we'll transform the table into narrow, or long, format (also makes plotting easier)
+meth_tax_long <- pivot_longer(meth_tax, !Family, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+
+# and here we are merging this table with the plotting table we just made
+meth_tax_info <- merge(meth_tax_long, sample_info_for_merge)
+```
+
+```{r}
+ggplot(meth_tax_info, aes(Proportion,Family )) +
+  geom_jitter(aes(color=factor(replicate)), size=2.5, width=0.15, height=0) +
+  geom_boxplot(fill=NA, outlier.color=NA) + 
+  theme_bw() +  my_theme +
+  theme(axis.text.x=element_text(size=12), legend.title=element_blank()) + 
+  labs(x="% of 16S rRNA gene copies recovered", y="Methylococcales families", title="All samples")
+```
+
+### Methylococcaceae
+
+```{r}
+# Accounting for ASVs that were not assigned a family level. 
+unclassified_tax_counts_fam <- colSums(bact_count_table) - colSums(fam_counts_tab)
+
+# and we'll add this row to our class count table:
+fam_and_unidentified_counts_tab <- rbind(fam_counts_tab, "No_Family_assigned"=unclassified_tax_counts_fam) 
+
+# check that we are on the right track 
+identical(colSums(bact_count_table), colSums(fam_and_unidentified_counts_tab))
+```
+
+```{r}
+# making count table broken down by genus 
+gen_counts_tab <- otu_table(tax_glom(ASV_physeq, taxrank="Genus")) 
+
+# making a table that holds the family and genus level info for each ASV 
+gen_tax_fam_tab <- tax_table(tax_glom(ASV_physeq, taxrank="Genus"))  
+
+gen_tax_tab <- data.frame("Family"=gen_tax_fam_tab[,5], "Genus"=gen_tax_fam_tab[,6], row.names = row.names(gen_tax_fam_tab))  
+
+# changing the row names like above so that they correspond to the taxonomy, rather than an ASV identifier
+rownames(gen_counts_tab) <- as.vector(gen_tax_tab$Genus)
+```
+
+```{r}
+# making a vector of just the Methylococcaceae genera 
+meth_gen_vec <- as.vector(gen_tax_tab[gen_tax_tab$Family == "Methylococcaceae", "Genus"])   
+
+# making a table of the counts of the Gammaproteobacteria orders 
+meth_gen_counts_tab <- gen_counts_tab[row.names(gen_counts_tab) %in% meth_gen_vec, ]     
+
+# taking into account ASVs that were assigned Gammaproteobacteria but not any further 
+meth_no_gen_counts <- fam_and_unidentified_counts_tab[row.names(fam_and_unidentified_counts_tab) %in% "Methylococcaceae", ] - colSums(meth_gen_counts_tab)  
+
+# since the counts assigned "Gammaproteobacteria" are all accounted for (as they are all further subsetted within the phylum table, including the unidentified Gammaproteobacteria), let's make a table of our class counts for everything other than gamma 
+non_methy <- fam_and_unidentified_counts_tab[-5,] 
+non_methy_count <- colSums(non_methy)  
+
+# now combining the tables: 
+gen_taxa_counts_tab <- rbind("Other" = non_methy_count,
+                             meth_gen_counts_tab,
+                             "Unresolved_Methylococcaceae"= meth_no_gen_counts) 
+
+identical(colSums(bact_count_table), colSums(gen_taxa_counts_tab))  
+
+major_gen_proportions_tab <- apply(gen_taxa_counts_tab, 2, function(x) x/sum(x)*100) 
+```
+
+```{r}
+# first let's make a copy of our table that's safe for manipulating 
+methy_tax <- as.data.frame(major_gen_proportions_tab)  
+
+# and add a column of the taxa names so that it is within the table, rather than just as row names (this makes working with ggplot easier) 
+methy_tax$Genus <- row.names(methy_tax)  
+
+# now we'll transform the table into narrow, or long, format (also makes plotting easier) 
+methy_tax_long <- pivot_longer(methy_tax, !Genus, names_to = "Sample", values_to = "Proportion") %>% data.frame()  
+
+# and here we are merging this table with the plotting table we just made 
+methy_tax_info <- merge(methy_tax_long, sample_info_for_merge)
+```
+
+```{r}
+ggplot(methy_tax_info, aes(Genus, Proportion)) +  
+  geom_jitter(aes(color=factor(replicate)), size=2.5, width=0.15, 
+              height=0) +  
+  geom_boxplot(fill=NA, outlier.color=NA) +   
+  theme_bw() +    
+  theme(axis.text.x=element_text(size=12, angle=45, hjust=1), 
+        legend.title=element_blank()) +    
+  labs(x="Methylococcaceae genera", 
+       y="% of 16S rRNA gene copies recovered", title="All samples")
+```
+
+## Relative abundance phyloseq
+
+```{r}
+# use functions available in phyloseq package to calculate the RELATIVE ABUNDANCE of each ASV for each of the 24 samples. 
+ASV_relabund <- transform_sample_counts(ASV_physeq, function(x) x/sum(x))
+```
