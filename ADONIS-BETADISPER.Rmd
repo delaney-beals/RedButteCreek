@@ -1,0 +1,379 @@
+---
+title: "RBC 16S analysis: NMDS of gDNA and cDNA groups"
+output: html_document
+---
+
+Written by Delaney Beals \| Date created: October 17, 2023 \| Date most recent edit: December 11, 2023
+
+# Intro on non-metric-multidimensional scaling (NMDS)
+
+-   Different from PcoA in that in Pcoa you generate Eigen values from data, draw lines through that data that represents the most amount of variation.
+
+-   In NMDS, you tell the algorithm how many dimensions we want, which is always 2 since we are representing this on paper.
+
+-   NMDS is an optimization program that generally does a better job than pcoa since NMDS is a non-linear approach.
+
+-   metaMDS in the vegan package will repeat this algo 20 times, trying to find the smallest stress value, which can be thought of as the amount of distortion that happens when you take multidimentsional data and smush it into 2 dimensions
+
+    -   want to make sure you reach convergence after the 20 runs, if not, you can lower the set.seed value
+
+Here we want to compare the microbial communities our RBC June and October 16S rRNA amplicon sequencing data. We will be following along the @Riffomonas Project video (<https://www.youtube.com/watch?v=oLf0EpMJ4yA&t=10s>).
+
+```{r message=FALSE, warning=FALSE}
+# load in required libraries
+library(tidyverse)
+library(vegan)
+library(ggrepel)
+```
+
+This comparison will use ASV counts from each sample (not relative abundances). We will separate our data into two main groups, gDNA and cDNA, and look at the differences in month and soil type within either gDNA-derived or cDNA-derived samples.
+
+```{r}
+# load in our ASV count table and transpose it so that each ASV is a column and samples are row names
+bact_count_table <- read.table("June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+bact_count_table_t <- as.data.frame(t(bact_count_table))
+
+# load in our metadata table that tells us what soil type, month, and nucleic acid template (gDNA vs. cDNA) our sequences came from.
+sample_lookup <- read.csv("June_Oct_16S_MERGE_metadata.csv", header = TRUE)
+sample_lookup <- as.data.frame(sample_lookup)
+```
+
+We will start with gDNA then do the same thing for cDNA. Generate a tibble with our ASV count data and put it into long form.
+
+```{r}
+bact_count_table_full <- bact_count_table_t %>%
+  as_tibble(rownames = "sample") %>%
+  pivot_longer(-sample) %>%
+   inner_join(., sample_lookup, by="sample")
+```
+# gDNA templates
+
+Select only the community data that came from gDNA templates.
+
+```{r}
+# create a vector so we only select gDNA-derived samples
+gDNA_wanted <- c("gDNA")
+
+bact_count_table_gDNA <- bact_count_table_full %>%
+  filter(template %in% gDNA_wanted) %>%
+    group_by(sample)
+```
+
+Now we need to see the total number of ASVs that were assigned to each sample, so that we can decide what number to rarefy to. We can do this by creating a row in our tibble that sums each sample's total number of ASVs (which are reported in the "value" column). We will use arrange(N) to sort these summations in ascending order.
+
+```{r}
+bact_count_table_filt <- bact_count_table_gDNA %>%
+  summarize(N = sum(value)) %>%
+  arrange(N)
+
+bact_count_table_filt
+```
+
+The results from this output tells us that the October riparian gDNA replicate 1 ("10RgDNA1") had the fewest total number of ASVs within it, at 116,838 total. Naturally, a sample with fewer total ASVs is going to have less abundance of everything and fewer representatives of commonly found ASVs. We can take this into account by either calculating relative abundances or by rarefying to the lowest number of ASVs, which in this case would be 116,838.
+
+Now that we have this value for our gDNA subset, we don't need it anymore, so we will make some changes to our tibble to simplify things like putting it into the wide format and giving it a name so we can work with it further.
+
+```{r}
+gDNA_comm_tbl <- bact_count_table_t %>%
+    as_tibble(rownames = "sample") %>%
+    pivot_longer(-sample) %>%
+    inner_join(., sample_lookup, by="sample") %>%
+    filter(template %in% gDNA_wanted) %>%
+    group_by(sample) %>%
+    mutate(N = sum(value)) %>%
+    ungroup() %>%
+    select(-N) %>%
+    pivot_wider(names_from = "name", values_from = "value", values_fill = 0)
+
+gDNA_comm_tbl
+```
+
+Make a separate table for our metadata and our ASV counts from our tibble.
+
+```{r}
+gDNA_comm_metadata <- gDNA_comm_tbl %>%
+  select(sample, month, soil, template, replicate, flux, latitude, longitude, soil.temp, monthsoil, color_month, color_soil)
+
+gDNA_comm <- gDNA_comm_tbl %>%
+  select(-month, -soil, -template, -replicate, -flux, -latitude, -longitude, -soil.temp, -monthsoil, -color_month, -color_soil) %>%
+  column_to_rownames("sample") 
+```
+
+## Distance matrix
+
+Now calculate the distance matrix using avgdist, accounting for the lowest number of ASVs found in any sample within the gDNA group.
+
+```{r}
+gDNA_comm_dist <- avgdist(gDNA_comm, sample = 116838)
+```
+
+Now we will make an NMDS ordination plot using our distance matrix. The set.seed(777) is run to make sure our work is reproducible, as this tells the metaMDS function what random numbers to generate that it uses during its calculations.
+
+```{r}
+set.seed(3)
+metaMDS(gDNA_comm_dist)
+```
+
+Now we can put the NMDS scores into a tibble so that we can plot these and make an ordination plot.
+
+```{r}
+set.seed(88)
+gDNA_comm_NMDS <- metaMDS(gDNA_comm_dist) %>%
+  scores() %>%
+  as_tibble(rownames="sample")
+
+gDNA_comm_NMDS
+```
+
+Now that we have our NMDS coordinates for each sample, we can add back the metadata so that we can look at the ordination plot based on the different characteristics such as month and soil type.
+
+```{r message=FALSE, warning=FALSE}
+metadata_gNMDS <- inner_join(gDNA_comm_metadata, gDNA_comm_NMDS)
+```
+
+## NMDS plots
+
+Let's plot our ordination with colors assigned by the month.
+
+```{r}
+metadata_gNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=month)) +
+  geom_point(size=2) +
+  theme_bw()
+```
+
+Looks like the samples are pretty mixed up with each other, so there may not be a big difference between June and October gDNA as a whole. Now instead look at the ordination based on soil type.
+
+```{r}
+metadata_gNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=soil)) +
+  geom_point(size=2) +
+  theme_bw()
+```
+
+Looks like there is a much clearer distinction, which tells us that the differences between gDNA samples may be caused by the different soil types.
+
+Let's try one more thing where we can make geom_points that correspond to both of our characteristics
+
+```{r}
+metadata_gNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=soil, shape=month)) +
+  geom_point(size=2) +
+  theme_bw()
+```
+
+Another thing we can do with these ordination plots is to look at the centroids, or the most middle point among a group and see if those are different. We will first calculate the centroid for the soil, then for the month groups.
+
+```{r}
+centroid_soil <- metadata_gNMDS %>%
+  group_by(soil) %>%
+  summarize(NMDS1=mean(NMDS1), NMDS2=mean(NMDS2))
+
+centroid_month <- metadata_gNMDS %>%
+  group_by(month) %>%
+  summarize(NMDS1=mean(NMDS1), NMDS2=mean(NMDS2))
+```
+
+Now we can plot those centroids on our ordination plot
+
+```{r}
+metadata_gNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=soil)) +
+  geom_point(size=2) +
+  theme_bw() +
+  geom_point(data=centroid_soil, color="black") 
+```
+
+```{r}
+metadata_gNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=month)) +
+  geom_point(size=2) +
+  theme_bw() +
+  geom_point(data=centroid_month, color="green")
+```
+
+So we can see that the green centroids, which correspond to the month, are really close together, while the black soil type centroids are more spaced apart. This is essentially telling us the same thing as looking at the original ordination plots, but this technique would be even more useful if we had a lot more samples plotted here.
+
+```{r}
+metadata_gNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=soil)) +
+  geom_point(size=2) +
+  theme_bw()+
+  geom_point(data=centroid_month, color="black") +
+  geom_point(data=centroid_soil, color = "green")
+```
+
+## ANOSIM
+
+```{r}
+anosim(gDNA_comm_dist, gDNA_comm_metadata$soil, permutations=999)
+```
+
+## Adonis
+
+Now we can use the statistical test from adonis (also called permanova) to see if there is a statistical difference between the months or the soil types.
+
+```{r}
+anova(betadisper(gDNA_comm_dist, gDNA_comm_metadata$month))
+adonis2(gDNA_comm_dist~gDNA_comm_metadata$month, permutations=999) # don't need to change the 999, this is the accepted number typically run for all datasets
+```
+
+Results from anova are p = 0.2006, so the gDNA June and gDNA October communities do not have significantly different variation amongst their populations. The adonis test gives a p = 0.006, which tells us there is a **significant difference in the communities themselves between gDNA June and gDNA October.**
+
+```{r}
+anova(betadisper(gDNA_comm_dist, gDNA_comm_metadata$soil))
+adonis2(gDNA_comm_dist~gDNA_comm_metadata$soil, permutations=999)
+```
+
+Results from anova are p = 0.02768, which means the variations of the gDNA riparian and gDNA upland communities are significantly different. The results of the adonis are p = 0.003, which means that the **communities of gDNA riparian and gDNA upland are significantly different**.
+
+# cDNA templates
+
+Now we will leave behind the gDNA and instead look at the cDNA. First start with our tibble the same way we did for the gDNA, where we add in the metadata and then sum up our ASVs for each sample to see who has the lowest sequencing depth.
+
+```{r}
+cDNA_wanted <- c("cDNA")
+
+bact_count_table_cDNA <- bact_count_table_full %>%
+  filter(template %in% cDNA_wanted) %>%
+  group_by(sample)
+
+bact_count_table_filt_cDNA <- bact_count_table_cDNA %>%
+  summarize(N = sum(value)) %>%
+  arrange(N)
+
+bact_count_table_filt_cDNA
+```
+
+From this we know to rarefy by 176,264 samples.
+
+Now make our tibble in wide format and give it a name.
+
+```{r}
+cDNA_comm_tbl <- bact_count_table_t %>%
+    as_tibble(rownames = "sample") %>%
+    pivot_longer(-sample) %>%
+    inner_join(., sample_lookup, by="sample") %>%
+    filter(template %in% cDNA_wanted) %>%
+    group_by(sample) %>%
+    mutate(N = sum(value)) %>%
+    ungroup() %>%
+    select(-N) %>%
+    pivot_wider(names_from = "name", values_from = "value", values_fill = 0)
+```
+
+Separating our tibble into metadata and ASV counts
+
+```{r}
+cDNA_comm_metadata <- cDNA_comm_tbl %>%
+  select(sample, month, soil, template, replicate, flux, latitude, longitude, soil.temp, monthsoil, color_month, color_soil)
+
+cDNA_comm <- cDNA_comm_tbl %>%
+  select(-month, -soil, -template, -replicate, -flux, -latitude, -longitude, -soil.temp, -monthsoil, -color_month, -color_soil) %>%
+  column_to_rownames("sample") 
+```
+
+## Distance matrix
+
+Calculating the average distance, taking into account the lowest number of ASVs found in any sample.
+
+```{r}
+cDNA_comm_dist <- avgdist(cDNA_comm, sample = 176264)
+```
+
+```{r}
+set.seed(8)
+cDNA_comm_NMDS <- metaMDS(cDNA_comm_dist) %>%
+  scores() %>%
+  as_tibble(rownames="sample")
+
+cDNA_comm_NMDS
+```
+
+Joining our metadata into our NMDS distance matrix
+
+```{r message=FALSE, warning=FALSE}
+metadata_cNMDS <- inner_join(cDNA_comm_metadata, cDNA_comm_NMDS)
+
+metadata_cNMDS
+```
+
+## NMDS plots
+
+Let's make our first plot
+
+```{r}
+metadata_cNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=soil, label= sample)) +
+  geom_point(size=2) +
+  theme_bw() +
+  geom_label(aes(label=sample)) + 
+  geom_label_repel(max.overlaps = Inf)
+```
+
+```{r}
+metadata_cNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=month, label = sample)) +
+  geom_point(size=2) +
+  theme_bw() +
+  geom_label(aes(label=sample)) + 
+  geom_label_repel(max.overlaps = Inf)
+```
+
+```{r}
+metadata_cNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=soil, shape=month)) +
+  geom_point(size=5) +
+  theme_bw()
+```
+
+```{r}
+centroid_soilc <- metadata_cNMDS %>%
+  group_by(soil) %>%
+  summarize(NMDS1=mean(NMDS1), NMDS2=mean(NMDS2))
+
+centroid_monthc <- metadata_cNMDS %>%
+  group_by(month) %>%
+  summarize(NMDS1=mean(NMDS1), NMDS2=mean(NMDS2))
+```
+
+```{r}
+metadata_cNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=soil)) +
+  geom_point(size=5) +
+  theme_bw()+
+  geom_point(data=centroid_soilc, color="black")
+```
+
+```{r}
+metadata_cNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=month)) +
+  geom_point(size=5) +
+  theme_bw()+
+  geom_point(data=centroid_monthc, color="black")
+```
+
+```{r}
+metadata_cNMDS %>%
+  ggplot(aes(x=NMDS1, y=NMDS2, color=month)) +
+  geom_point(size=5) +
+  theme_bw()+
+  geom_point(data=centroid_monthc, color="black") +
+  geom_point(data=centroid_soilc, color = "green")
+```
+
+## Adonis
+
+```{r}
+anova(betadisper(cDNA_comm_dist, cDNA_comm_metadata$soil))
+adonis2(cDNA_comm_dist~cDNA_comm_metadata$soil, permutations=999)
+```
+
+anova result for soil is p = 0.1938, so our samples have similar dispersion. adonis result is p = 0.1, so we **do not have significant difference in the communities between cDNA riparian and cDNA upland.**
+
+```{r}
+anova(betadisper(cDNA_comm_dist, cDNA_comm_metadata$month))
+adonis2(cDNA_comm_dist~cDNA_comm_metadata$month, permutations=999)
+```
+
+anova is p = 0.38, which is not significant, so we don't have sig difference between the variation among samples within the June month and samples within the October month. adonis result is p = 0.005, meaning we have a **significant difference between cDNA June communities and cDNA October communities**.
