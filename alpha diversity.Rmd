@@ -1,0 +1,829 @@
+---
+title: 'RBC 16S analysis: alpha diversity'
+output: html_document
+---
+
+Written by Delaney Beals \| Date created: October 23, 2023 \| Date most recent edit: January 30, 2023
+
+# Alpha diversity
+
+"Alpha diversity refers to the diversity of a local community (i.e. a single site or sample). The simplest form of alpha diversity is species richness which is the number of species observed in the local community. However, there are many different metrics which can be used to quantify alpha diversity in community ecology, that can broadly be broken down into three categories: measures of species richness, measures of species evenness, and overall diversity metrics considering both richness and evenness."
+
+resource: <https://rstudio-pubs-static.s3.amazonaws.com/548738_f2de141dddb146879c535583eb8ba79c.html>
+
+The alpha diversity measures listed are common indices used to assess species diversity within a single sample or habitat, which in this case is for microbial communities. Here's what each of these measures represents:
+
+-   Observed: The number of unique species (or Operational Taxonomic Units, OTUs) observed in the sample. It is the simplest measure of diversity, which is the count of different types of organisms present.
+
+-   Chao1: An estimator of species richness that takes into account the number of rare species (usually those observed only once or twice). It provides a way to estimate the total species richness in a community based on sample data.
+
+-   se.chao1: The standard error of the Chao1 estimator. This gives an indication of the variability or uncertainty in the Chao1 estimate.
+
+-   ACE: Abundance-based Coverage Estimator. Like Chao1, ACE estimates the species richness but gives more weight to the rare species. It is considered more accurate when there are many rare species in a sample.
+
+-   se.ACE: The standard error of the ACE estimator. Similar to se.chao1, it represents the uncertainty in the ACE estimate.
+
+-   Shannon: The Shannon diversity index, also known as the Shannon-Wiener index, measures the entropy in the distribution of species in a sample. It accounts for both abundance and evenness of the species present.
+
+-   Simpson: The Simpson diversity index measures the probability that two individuals randomly selected from a sample will belong to the same species. It gives more weight to the most abundant species.
+
+-   InvSimpson: The inverse Simpson index is the reciprocal of the Simpson index. It gives a higher value to more diverse communities, with more weight on rare species compared to the regular Simpson index.
+
+-   Fisher: Fisher's alpha is another diversity measure that estimates species richness and combines elements of both species richness and evenness. It is based on the logarithmic series model of species abundance.
+
+Each of these measures provides a different perspective on the community's diversity, taking into account factors like species richness, evenness, and abundance. They are used to compare biodiversity across different samples or habitats or to assess changes in diversity over time.
+
+```{r message=FALSE, warning=FALSE}
+library(vegan)
+library(phyloseq)
+library(tidyverse)
+library(ggplot2)
+library(viridis)
+library(cowplot)
+library(patchwork)
+library(ggpubr)
+```
+
+Making a phyloseq object
+
+```{r}
+# LOAD IN DATA
+bact_count_table <- read.table("June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+bact_taxa_table <- as.matrix(read.table("June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
+bact_sample_info_table <- read.table("June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",") 
+
+# first we need to create a phyloseq object using our un-transformed count table
+tax_mat <- as.matrix(bact_taxa_table)
+TAX <- phyloseq::tax_table(tax_mat)
+
+samples = sample_data(bact_sample_info_table)
+
+otu_mat <- as.matrix(bact_count_table)
+OTU = otu_table(otu_mat, taxa_are_rows = TRUE)
+ASV_physeq <- phyloseq(TAX, OTU, samples)
+```
+
+### Calculate alpha diversity
+
+```{r}
+# load metadata
+bact_sample_info_tablex <- read.table("June_Oct_16S_MERGE_metadata_x.csv", header = T, sep = ",") 
+
+# calculate all alpha diversity measures 
+estimate <- estimate_richness(ASV_physeq)
+
+# combine with metadata
+alphax <- cbind(estimate, bact_sample_info_tablex)
+```
+
+### Plot alpha diversity
+
+```{r}
+# for editing theme
+my_theme <- theme_bw() +
+        theme(text=element_text(size = 12), 
+        axis.text.x=element_text(size=10, color = "black"), 
+        axis.text.y = element_text(size=10, color = "black"),
+        title = element_text(size = 10, color = "black"), 
+        legend.title=element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank()
+        )
+```
+
+```{r}
+aa <- ggplot(alphax, aes(x = replicate, y = Observed, 
+                               colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  ylab("# of ASVs") + 
+  xlab("") +
+  my_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, 
+                                   vjust = 0.4))
+
+bb <-ggplot(alphax, aes(x = replicate, y = Chao1, 
+                               colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  ylab("Chao1") +
+  xlab("") +
+  my_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, 
+                                   vjust = 0.4))
+
+cc <- ggplot(alphax, aes(x = replicate, y = Shannon, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  ylab("Shannon diversity") +
+  xlab("") +
+  my_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))
+
+dd <- ggplot(alphax, aes(x = replicate, y = Simpson, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  ylab("Simpson") +
+  xlab("") +
+  my_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))
+
+ee <- ggplot(alphax, aes(x = replicate, y = PD, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  ylab("Phylogenetic diversity") +
+  xlab("") +
+  my_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))
+
+legend <- get_legend(dd)
+
+plot_grid(aa + theme(legend.position = "none"), 
+          bb + theme(legend.position = "none"), 
+          cc + theme(legend.position = "none"),
+          dd + theme(legend.position = "none"), 
+          ee + theme(legend.position = "none"),
+          legend,
+          ncol = 3, nrow = 2)
+```
+
+These graphs illustrate the differences between alpha diversity metrics and the relationship between species richness, Pielou's evenness, and Shannon's H'. Let's look at two examples: June-rip-gDNA and Oct-rip-gDNA. These two samples have similar Shannon H' scores, however, this is a result of distinct mechanisms. June-rip-gDNA has a large number of ASVs (high species richness) but is relatively uneven (moderate Pielou's Evenness), resulting in a moderate Shannon H'. Oct-rip-gDNA, in contrast, has a small number of ASVs (low species richness) but is very even (high Pielou's evenness), also resulting in a moderate Shannon H'. Alpha diversity is structured very differently in June-rip-gDNA compared to Oct-rip-gDNA, but if we had used Shannon H' alone we may not have identified these differences.
+
+```{r}
+my_theme2 <- theme_bw() +
+        theme(text=element_text(size = 12), 
+        axis.text.x=element_text(size=10, color = "black"), 
+        axis.text.y = element_text(size=10, color = "black"),
+        title = element_text(size = 10, color = "black"), 
+        legend.title=element_blank(),
+        panel.grid.minor = element_blank()
+        )
+
+fill_col = c("#b2182b", "#fb9a99", "#2166ac", "#a6cee3")
+
+outline_col = c("black")
+
+vertical.lines <- c(1, 2, 3,4)
+
+# make plots for each alpha diversity measure
+x <- ggplot(data = alphax, aes(x = monthsoil, y = Chao1)) +
+  geom_jitter(aes(shape = template, fill = monthsoil),
+             size = 3, stroke = 1) + 
+  scale_shape_manual(values = c(24, 21)) + 
+  ylim(0,8000) +
+  scale_fill_manual(values = c("#b2182b", "#fb9a99", "#2166ac", "#a6cee3")) +
+  my_theme2 +
+  guides(fill = guide_legend(override.aes = list(color = fill_col))) +
+  labs(x="", y="", title="Chao1") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+y <- ggplot(data = alphax, aes(x = monthsoil, y = Shannon)) +
+  geom_jitter(aes(shape = template, fill = monthsoil),
+             size = 3, stroke = 1) + 
+  scale_shape_manual(values = c(24, 21)) + 
+  ylim(0,8) +
+  scale_fill_manual(values = c("#b2182b", "#fb9a99", "#2166ac", "#a6cee3")) +
+  my_theme2 +
+  guides(fill = guide_legend(override.aes = list(color = fill_col))) +
+  labs(x="", y="", title="Shannon diversity") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+z <- ggplot(data = alphax, aes(x = monthsoil, y = PD)) +
+  geom_jitter(aes(shape = template, fill = monthsoil),
+             size = 3, stroke = 1) + 
+  scale_shape_manual(values = c(24, 21)) + 
+  ylim(0,15000) +
+  scale_fill_manual(values = c("#b2182b", "#fb9a99", "#2166ac", "#a6cee3")) +
+  my_theme2 +
+  guides(fill = guide_legend(override.aes = list(color = fill_col))) +
+  labs(x="", y="", title="Phylogenetic diversity") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+legend1 <- get_legend(z)
+
+# plot Chao1 and Shannon; not doing Faith phylo diversity anymore
+alpha_plot <- plot_grid(x + theme(legend.position = "none"), 
+         y + theme(legend.position = "none"),
+          ncol = 2)
+
+alpha_plot
+```
+
+```{r}
+# read in NMDS info
+metadata_NMDSx <- read.table("metadata_NMDS.csv", header = T, row.names = 1, sep = ",") 
+metadata_NMDSx <- as.data.frame(metadata_NMDSx)
+# custom color plot
+fill_col = c("#b2182b", "#fb9a99", "#2166ac", "#a6cee3")
+
+NMDS_plotx <- ggplot(data = metadata_NMDSx, aes(x = NMDS1, y = NMDS2)) +
+  geom_point(aes(shape = template, fill = monthsoil),
+             size = 3, stroke = 1) + 
+  scale_shape_manual(values = c(24, 21)) + 
+  scale_y_continuous(n.breaks = 6) +
+  scale_x_continuous(n.breaks = 6) +
+  scale_fill_manual(values = c("#b2182b", "#fb9a99", "#2166ac", "#a6cee3")) +
+  my_theme +
+  guides(fill = guide_legend(override.aes = list(color = fill_col)))
+
+NMDS_plotx
+```
+
+```{r}
+#combine with NMDS plot
+combo1 <- plot_grid(alpha_plot + theme(legend.position = "none"), 
+          NMDS_plotx + theme(legend.position = "none"),
+          nrow=2)
+
+ plot_grid(combo1, legend1, 
+          ncol=2, rel_widths = c(1, 0.3), rel_heights = c(1, 0.3))
+```
+
+```{r}
+# trying to combine table further
+alphax_t <- as.data.frame(t(alphax))
+alphax_t$Measure <- row.names(alphax_t)
+alphax_long <- pivot_longer(alphax_t, !Measure, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+
+bact_sample_info_tablex <- read.table("June_Oct_16S_MERGE_metadata_x.csv", header = T, row.names = 1, sep = ",") 
+sample_info_for_mergex <- data.frame(
+  "Sample"=row.names(bact_sample_info_tablex),
+  "month"=bact_sample_info_tablex$month,
+  "soil"=bact_sample_info_tablex$soil,
+  "template"=bact_sample_info_tablex$template,
+  "replicate"=bact_sample_info_tablex$replicate,
+  "monthsoil"=bact_sample_info_tablex$monthsoil,
+  stringsAsFactors=F)
+
+# and here we are merging this table with the plotting table we just made
+alphax_info <- merge(alphax_long, sample_info_for_mergex)
+
+# make plot
+ggplot(data = alphax_info, aes(x = Measure, y = Proportion)) +
+  geom_point(aes(shape = template, fill = monthsoil),
+             size = 3, stroke = 1) 
+```
+
+```{r}
+# make table of only gDNA
+gDNA_wanted <- c("gDNA")
+
+alphax_gDNA <- alphax %>%
+  filter(template %in% gDNA_wanted) %>%
+    group_by(sample)
+```
+
+```{r}
+# plot gDNA alpha diversity measures
+aaa <- ggplot(alphax_gDNA, aes(x = monthsoil, y = Chao1, 
+                               colour = monthsoil)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  ylab("Chao1") + 
+  xlab("") +
+  ylim(1000,8000) +
+  my_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, 
+                                   vjust = 0.4))
+
+ccc <- ggplot(alphax_gDNA, aes(x = monthsoil, y = Shannon, colour = monthsoil)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  ylab("Shannon diversity") +
+  xlab("") +
+  ylim(4,8)+
+  my_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))
+
+ddd <- ggplot(alphax_gDNA, aes(x = monthsoil, y = PD, colour = monthsoil)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  ylab("Phylogenetic diversity") +
+  xlab("") +
+   ylim(5000,15000) +
+  my_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))
+
+legend <- get_legend(ddd)
+
+alpha_gDNA_plot <- plot_grid(aaa + theme(legend.position = "none"), 
+         ccc + theme(legend.position = "none"),
+          ddd + theme(legend.position = "none"), 
+          ncol = 3)
+
+gDNA_title <- ggdraw() + draw_label("gDNA", fontface = "bold", x = 0, hjust = 0) + theme(plot.margin = margin(0, 0, 0, 7))
+
+alpha_gDNA_plot_title <- plot_grid(gDNA_title,alpha_gDNA_plot, ncol = 1, rel_heights = c(0.1, 1))
+
+alpha_gDNA_plot_title
+```
+
+```{r}
+# do the same for cDNA
+cDNA_wanted <- c("cDNA")
+
+alphax_cDNA <- alphax %>%
+  filter(template %in% cDNA_wanted) %>%
+    group_by(sample)
+```
+
+```{r}
+# plot cDNA alpha diversity measures
+aaaa <- ggplot(alphax_cDNA, aes(x = monthsoil, y = Chao1, colour = monthsoil)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  ylab("Chao1") + 
+  xlab("") +
+  ylim(1000,8000) +
+  my_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))
+
+cccc <- ggplot(alphax_cDNA, aes(x = monthsoil, y = Shannon, colour = monthsoil)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  ylab("Shannon diversity") +
+  xlab("") +
+  ylim(4,8)+
+  my_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))
+
+dddd <- ggplot(alphax_cDNA, aes(x = monthsoil, y = PD, colour = monthsoil)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  ylab("Phylogenetic diversity") +
+  xlab("") +
+  ylim(5000,15000) +
+  my_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))
+
+legend <- get_legend(dddd)
+
+alpha_cDNA_plot <- plot_grid(aaaa + theme(legend.position = "none"), 
+          cccc + theme(legend.position = "none"),
+          dddd + theme(legend.position = "none"),
+          rel_widths = c(1,1,1),
+          ncol = 3)
+
+cDNA_title <- ggdraw() + draw_label("cDNA", fontface = "bold", x = 0, hjust = 0) + theme(plot.margin = margin(0, 0, 0, 7))
+
+alpha_cDNA_plot_title <- plot_grid(cDNA_title,alpha_cDNA_plot, ncol = 1, rel_heights = c(0.1, 1))
+
+alpha_cDNA_plot_title
+```
+
+```{r}
+# combine tables
+plot_grid(alpha_gDNA_plot_title, alpha_cDNA_plot_title, nrow = 2)
+```
+
+## Relationships between alpha diversity and environment
+
+### Simple linear models
+
+```{r}
+summary(lm(flux ~ Chao1, alphax_gDNA)) # 
+summary(lm(flux ~ Shannon, alphax_gDNA))
+summary(lm(flux ~ PD, alphax_gDNA))
+```
+
+```{r}
+gDNA_flux_div1 <- 
+  ggplot(alphax_gDNA, aes(x = flux, y = Chao1, colour = monthsoil)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  xlab("Median methane flux") + 
+  ylab("Chao1") +
+  ylim(1000,8000) +
+   my_theme +
+  theme(legend.position = "none")
+
+gDNA_flux_div2 <-
+ggplot(alphax_gDNA, aes(x = flux, y = Shannon, colour = monthsoil)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  xlab("Median methane flux") + 
+  ylab("Shannon diversity") +
+  ylim(4,8)+
+  my_theme + 
+  theme(legend.position = "none") 
+
+gDNA_flux_div3 <-
+ggplot(alphax_gDNA, aes(x = flux, y = PD, colour = monthsoil)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  xlab("Median methane flux") + 
+  ylab("Phylogenetic diversity") +
+  ylim(5000,15000) +
+   my_theme 
+
+gDNA_flux_div <- gDNA_flux_div1 + gDNA_flux_div2 + gDNA_flux_div3
+
+div_gDNA_plot_title <- plot_grid(gDNA_title, gDNA_flux_div, nrow = 2, rel_heights = c(.1, 1))
+
+div_gDNA_plot_title
+```
+
+```{r}
+cDNA_flux_div1 <- 
+ggplot(alphax_cDNA, aes(x = flux, y = Chao1, colour = monthsoil)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  xlab("Median methane flux") + 
+  ylab("Chao1") +
+  ylim(1000,8000) +
+   my_theme +
+  theme(legend.position = "none") 
+
+cDNA_flux_div2 <- 
+ggplot(alphax_cDNA, aes(x = flux, y = Shannon, colour = monthsoil)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  xlab("Median methane flux") + 
+  ylab("Shannon diversity") +
+  ylim(4,8)+
+  my_theme + 
+  theme(legend.position = "none")
+
+
+cDNA_flux_div3 <- 
+ggplot(alphax_cDNA, aes(x = flux, y = PD, colour = monthsoil)) +
+  geom_smooth(method = "lm", colour = "black", fill = "grey90") +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("#b2182b", "#f4a582", "#2166ac", "#92c5de")) +
+  xlab("Median methane flux") + 
+  ylab("Phylogenetic diversity") +
+  ylim(5000,15000) +
+   my_theme 
+
+
+cDNA_flux_div <- cDNA_flux_div1 + cDNA_flux_div2 + cDNA_flux_div3
+
+div_cDNA_plot_title <- plot_grid(cDNA_title, cDNA_flux_div, nrow = 2, rel_heights = c(.1, 1))
+
+div_cDNA_plot_title
+```
+
+```{r}
+# combine tables
+plot_grid(div_gDNA_plot_title, div_cDNA_plot_title, nrow = 2)
+```
+
+```{r}
+f <- ggscatter(alphax_gDNA, x = "Observed", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson",
+          cor.coeff.args = list(label.x = 4000)
+          ) 
+
+g <- ggscatter(alphax_gDNA, x = "Shannon", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson"
+          ) 
+
+h <- ggscatter(alphax_gDNA, x = "PD", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          cor.coeff.args = list(label.x = 10000)
+          )
+i <- ggscatter(alphax_cDNA, x = "Chao1", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson",
+          cor.coeff.args = list(label.x = 4000)
+          ) 
+
+j <- ggscatter(alphax_cDNA, x = "Shannon", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson"
+          ) 
+
+k <- ggscatter(alphax_cDNA, x = "PD", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          cor.coeff.args = list(label.x = 8000, label.y = 30)
+          )
+
+ggarrange(f, g, h, i, j, k, nrow = 2, ncol = 3)
+
+```
+
+Using average values for Chao1, Shannon for each sample
+
+```{r}
+# load table with averages 
+alpha_avg <- read.table("alpha_avg.csv", header = T, row.names = 1, sep = ",")
+
+gDNA_wanted <- c("gDNA")
+cDNA_wanted <- c("cDNA")
+
+alpha_avg_gDNA <- alpha_avg %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% gDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+alpha_avg_cDNA <- alpha_avg %>%
+  as_tibble(rownames = "sample") %>%
+  filter(template %in% cDNA_wanted) %>% 
+  as.data.frame(rownames=paste0("sample", 1:12)) %>%
+  column_to_rownames("sample")
+
+# make grouped plot
+ff <- ggscatter(alpha_avg_gDNA, x = "avg_Observed", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson",
+          cor.coeff.args = list(label.x = 4000)
+          ) 
+
+gg <- ggscatter(alpha_avg_gDNA, x = "avg_Shannon", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson"
+          ) 
+
+hh <- ggscatter(alpha_avg_gDNA, x = "avg_PD", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          cor.coeff.args = list(label.x = 10000)
+          )
+ii <- ggscatter(alpha_avg_cDNA, x = "avg_Chao1", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson",
+          cor.coeff.args = list(label.x = 4000)
+          ) 
+
+jj <- ggscatter(alpha_avg_cDNA, x = "avg_Shannon", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson"
+          ) 
+
+kk <- ggscatter(alpha_avg_cDNA, x = "avg_PD", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          cor.coeff.args = list(label.x = 8000, label.y = 30)
+          )
+
+ggarrange(ff, gg, hh, ii, jj, kk, nrow = 2, ncol = 3)
+```
+
+Looking at other alpha diversity values
+
+```{r}
+ggscatter(alpha_avg_gDNA, x = "avg_ACE", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          ) + 
+  ggscatter(alpha_avg_cDNA, x = "avg_ACE", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          )
+
+ggscatter(alpha_avg_gDNA, x = "avg_Simpson", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          ) + 
+  ggscatter(alpha_avg_cDNA, x = "avg_Simpson", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          )
+
+ggscatter(alpha_avg_gDNA, x = "avg_InvSimpson", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          ) + 
+  ggscatter(alpha_avg_cDNA, x = "avg_InvSimpson", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          )
+
+ggscatter(alpha_avg_gDNA, x = "avg_Fisher", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          ) + 
+  ggscatter(alpha_avg_cDNA, x = "avg_Fisher", y = "flux",
+          add = "reg.line",                                      
+          conf.int = TRUE,                                       
+          add.params = list(color = "black", fill = "gray"),
+          cor.coef = TRUE, cor.method = "pearson", 
+          )
+```
+
+How do these values correlate with median methane flux?
+
+```{r}
+gDNA_alpha_corr<- Hmisc::rcorr(as.matrix(alpha_avg_gDNA), type=c("pearson"))
+
+corrplot(corr=gDNA_alpha_corr$r[1:22, 23:27], 
+         p.mat=gDNA_alpha_corr$P[1:22, 23:27], 
+         tl.col = "black",
+         tl.srt = 45,
+         insig = "pch", 
+         sig.level = c(.05), 
+         pch.cex = 3, 
+         pch.col = "black", 
+         addCoef.col="black",  
+         number.cex=0.7,
+         number.digits = 2,
+         cl.length = 5,
+         cl.align.text = "l")
+
+cDNA_alpha_corr<- Hmisc::rcorr(as.matrix(alpha_avg_cDNA), type=c("pearson"))
+
+corrplot(corr=cDNA_alpha_corr$r[1:22, 23:27], 
+         p.mat=cDNA_alpha_corr$P[1:22, 23:27], 
+         tl.col = "black",
+         tl.srt = 45,
+         insig = "pch", 
+         sig.level = c(.05), 
+         pch.cex = 3, 
+         pch.col = "black", 
+         addCoef.col="black",  
+         number.cex=0.7,
+         number.digits = 2,
+         cl.length = 5,
+         cl.align.text = "l")
+```
+
+### Analysis of Variance (ANOVA)
+
+```{r}
+summary(aov(Shannon ~ month, alphax))
+summary(aov(Shannon ~ soil, alphax))
+```
+
+```{r}
+month.plot <- ggplot(alphax, aes(x = month, y = Shannon, fill = month)) +
+  geom_boxplot(aes(fill = month)) +
+  geom_point(size = 3, aes(colour = replicate)) + 
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  scale_fill_manual(values = c("grey60", "grey90"), guide = "none") +
+  ylab("Shannon's H'") + 
+  xlab('')+
+  theme_bw()
+
+soil.plot <- ggplot(alphax, aes(x = soil, y = Shannon, fill = soil)) +
+  geom_boxplot(aes(fill = soil)) +
+  geom_point(size = 3, aes(colour = replicate)) + 
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  scale_fill_manual(values = c("grey60", "grey90"), guide = "none") +
+  ylab("") + 
+  xlab('')+
+  theme_bw()
+
+legend <- get_legend(soil.plot)
+
+plot_grid(month.plot + theme(legend.position = 'none'),
+          soil.plot + theme(legend.position = 'none'),
+          legend, ncol = 3)
+```
+
+The one-way ANOVA reveals a significant (p\<0.05) relationship between month (a categorical variable) and Shannon H', as greater gDNA amplicon diversity was observed in October soils compared with June soils.
+
+# Beta Diversity
+
+In this section, we will explore the differentiation between soil communities in Red Butte Creek. That is, to compare the dissimilarity in community composition between each pair of sites. Such analyses are challenging with large ASV by site matrices like our data, and consequently we us dissimilarity metrics to summarise differences between pairs of communities. There are a large number of dissimilarity metrics which are used by ecologists, which each have their own idiosyncrasies and applications. In the session we will calculate and compare two of the most common metrics, Bray-Curtis dissimilarity and Jaccard dissimilarity.
+
+### Calculate pairwise dissimilarity
+
+```{r}
+bact_sample_info_table_gDNA <- read.csv("June_Oct_16S_MERGE_metadata_gDNA.csv", header = T, row.names = 1, sep = ",")  
+bact_count_table_gDNA <- read.csv("June_Oct_MERGE_ASV_counts_gDNA.csv", header = T, row.names = 1, sep = ",")  
+```
+
+```{r}
+RBC.mdf <- t(bact_count_table_gDNA)
+rownames(RBC.mdf) <- bact_sample_info_table_gDNA$replicate
+
+RBC.bray <- vegdist(RBC.mdf, method = "bray")
+RBC.bray
+```
+
+```{r}
+RBC.jac <- vegdist(RBC.mdf, method = "jaccard")
+RBC.jac
+```
+
+## Ordination
+
+### Principal Coordinates Analysis (PCoA)
+
+```{r}
+# calculate principal coordinates analysis (Bray-Curtis)
+pcoa.RBC.bray <- cmdscale(RBC.bray, k = 2, eig = T)
+
+# extract axis positions for each site from cmdscale object and create a dataframe for plotting
+pcoa.RBC.bray.plotting <- as.data.frame(pcoa.RBC.bray$points)
+
+colnames(pcoa.RBC.bray.plotting) <- c("axis_1", "axis_2")
+
+pcoa.RBC.bray.plotting$replicate <- rownames(pcoa.RBC.bray.plotting)
+
+# calculate the proportion of variance in the data which is explained by the first two PCoA axes
+pcoa.RBC.bray$eig[1]/(sum(pcoa.RBC.bray$eig))
+```
+
+```{r}
+pcoa.RBC.bray$eig[2]/(sum(pcoa.RBC.bray$eig))
+```
+
+```{r}
+# repeat process with Jaccard dissimilarity matrix
+pcoa.RBC.jac <- cmdscale(RBC.jac, k = 2, eig = T)
+
+pcoa.RBC.jac.plotting <- as.data.frame(pcoa.RBC.jac$points)
+
+colnames(pcoa.RBC.jac.plotting) <- c("axis_1", "axis_2")
+
+pcoa.RBC.jac.plotting$replicate <- rownames(pcoa.RBC.jac.plotting)
+
+pcoa.RBC.jac$eig[1]/(sum(pcoa.RBC.jac$eig))
+```
+
+```{r}
+pcoa.RBC.jac$eig[2]/(sum(pcoa.RBC.jac$eig))
+```
+
+```{r}
+# create a PCoA plot
+pcoa.RBC.bray.plot <- ggplot(pcoa.RBC.bray.plotting, aes(x = axis_1, y = axis_2, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  theme_bw() + 
+  xlab("PCoA 1 (47.8%)") +
+  ylab("PCoA 2 (29.8%)") +
+  annotate(geom = 'text', label = 'Bray-Curtis', x = Inf, y = -Inf, hjust = 1.15, vjust = -1)
+
+pcoa.RBC.jac.plot <- ggplot(pcoa.RBC.jac.plotting, aes(x = axis_1, y = axis_2, colour = replicate)) +
+  geom_point(size = 3) +
+  scale_colour_viridis_d(option = "magma", begin = 0.2, end = 0.8) +
+  theme_bw() + 
+  xlab("PCoA 1 (38.4%)") +
+  ylab("PCoA 2 (27.8%)") +
+  annotate(geom = 'text', label = 'Jaccard', x = Inf, y = -Inf, hjust = 1.215, vjust = -1)
+
+# extract plot legend
+legend <- get_legend(pcoa.RBC.jac.plot)
+
+# plot Bray-Curtis PCoA and Jaccard PCoA side by side
+plot_grid(pcoa.RBC.bray.plot + 
+            theme(legend.position = 'none'), 
+          pcoa.RBC.jac.plot +
+            theme(legend.position = 'none'), 
+          legend, ncol = 3, rel_widths = c(1,1,0.5))
+```
+
+### PERMANOVA
+
+PERMANOVA (permutational multivariate analysis of variance; Anderson 2001) is non-parametric multivariate statistical test used to quantify the impact of both continuous and categorical variables on dissimilarity between communities. While it is valid to construct a PERMANOVA model which includes continuous variables, in this instance we will use a simple PERMANOVA model to test the effect of sediment type on meiofaunal community composition. The input for PERMANOVA is a dissimilarity matrix (Bray-Curtis dissimilarity in this case), and corresponding environmental data. A resultant p-value \< 0.05 indicates that centroid position and/or dispersion differs between the groups in the model.
+
+\
+As PERMANOVA is affected by both centroid position and disperison, we perform a homogeneity of dispersions analysis using *betadisper* to establish whether dispersion is homogeneous between groups (in this case, silt and sand sediment associated communities). We will then perform PERMANOVA analysis using the *adonis* function in the R package *vegan*.
+
+```{r}
+# Homogeneity of dispersion test
+permutest(betadisper(RBC.bray, bact_sample_info_table_gDNA$month))
+
+# PERMANOVA analysis
+adonis2(RBC.bray ~ month, data = bact_sample_info_table_gDNA, permutations = 999)
+```

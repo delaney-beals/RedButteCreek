@@ -1,0 +1,42 @@
+---
+title: "RBC 16S analysis: Citations"
+output: html_document
+---
+
+Written by Delaney Beals \| Date created: December 5, 2023 \| Date most recent edit: December 11, 2023
+
+## Citations for packages used in Red Butte Creek 16S June and October analysis
+
+Resource: <https://ropensci.org/blog/2021/11/16/how-to-cite-r-and-r-packages/>
+
+Cite R and get version. Can copy the BibTex entry and use "Import from clipboard" in Zotero.
+
+```{r}
+citation()
+version$version.string
+```
+
+```{r}
+citation("vegan")
+packageVersion("vegan")
+```
+
+```{r}
+citation("picante")
+packageVersion("picante")
+```
+
+```{r}
+citation("geosphere")
+packageVersion("geosphere")
+```
+
+```{r}
+citation("dada2")
+packageVersion("dada2")
+```
+
+```{r}
+citation("UpSetR")
+packageVersion("UpSetR")
+```
