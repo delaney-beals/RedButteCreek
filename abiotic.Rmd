@@ -571,3 +571,19 @@ vwc_plot <- ggplot(averagePerDay_vwc, aes(x = dayMonth, y = averageValue)) +
 plot_grid(judd_plot, vwc_plot, nrow = 2)
 ```
 
+
+### Correlation between individual chamber flux and chamber soil temp
+
+```{r}
+# Load in data
+flux_temp <- read.csv("data/flux_data.csv", header = T, row.names = 1, sep = ",")
+flux_temp <- as.data.frame(flux_temp)
+
+head(flux_temp)
+```
+```{r}
+cor.test(flux_temp$flux, flux_temp$soil.temp, 
+                    method = "pearson") # R = -0.1087021 ; p-value = 0.5819
+ 
+```
+
