@@ -810,7 +810,7 @@ deseq_res_June_vs_Oct_g <- results(bact_deseq_month_g, alpha=0.01, contrast=c("m
 summary(deseq_res_June_vs_Oct_g) 
 
 # save the entire table as a .csv
-write.csv(deseq_res_June_vs_Oct_g, "sig_table_month_gDNA_all.csv")
+write.csv(deseq_res_June_vs_Oct_g, "data/sig_table_month_gDNA_all.csv")
 
 # let's subset this table to only include these that pass our specified significance level
 sigtab_res_deseq_June_vs_Oct_g <- deseq_res_June_vs_Oct_g[which(deseq_res_June_vs_Oct_g$padj < 0.01), ]
@@ -827,14 +827,17 @@ sigtab_res_deseq_June_vs_Oct_g_with_tax <- sigtab_res_deseq_June_vs_Oct_g_with_t
 # save the subsetted table of only our significant ASVs as a table
 sig_tab_month_g <- sigtab_res_deseq_June_vs_Oct_g_with_tax[order(sigtab_res_deseq_June_vs_Oct_g_with_tax$baseMean, decreasing=T), ]
 
-write.csv(sig_tab_month_g, "sig_table_month_gDNA.csv")
+write.csv(sig_tab_month_g, "data/sig_table_month_gDNA.csv")
 ```
 
-One Methylotenera and one Methyloversatilis.
+If I open sig_tab_month_g and search "Meth", I find One Methylotenera (log2FC: 9, pval = 0.004) and one Methyloversatilis (log2FC: 8, pval = 0.0036).
+
+To make a volcano plot, I want to include everything, even ASVs that were not significantly differentially abundant. 
 
 ```{r}
-deseq_res_June_vs_Oct_g_df <- as.data.frame(deseq_res_June_vs_Oct_g)
-JO_g_df <- deseq_res_June_vs_Oct_g_df[complete.cases(deseq_res_June_vs_Oct_g_df), ]
+# remove rows that contain NA where we would want the pvalue; indicates that this ASV was only present in one of our conditions
+JO_g <- as.data.frame(deseq_res_June_vs_Oct_g) 
+JO_g_df <- JO_g[complete.cases(JO_g), ]
 
 # The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
 # Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
@@ -842,19 +845,15 @@ JO_g_df <- deseq_res_June_vs_Oct_g_df[complete.cases(deseq_res_June_vs_Oct_g_df)
 # add a column of NAs
 JO_g_df$diffexpressed <- "NO"
 # if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
-JO_g_df$diffexpressed[JO_g_df$log2FoldChange > 9 & JO_g_df$padj < 0.01] <- "UP"
+JO_g_df$diffexpressed[JO_g_df$log2FoldChange > 5 & JO_g_df$padj < 0.01] <- "UP"
 # if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
-JO_g_df$diffexpressed[JO_g_df$log2FoldChange < -9 & JO_g_df$padj < 0.01] <- "DOWN"
+JO_g_df$diffexpressed[JO_g_df$log2FoldChange < -5 & JO_g_df$padj < 0.01] <- "DOWN"
 
 
 # plot a volcano plot
 ggplot(data = JO_g_df, aes(x = log2FoldChange, y = -log10(padj),
                          col = diffexpressed)) + 
-  geom_vline(xintercept = c(-5, 5), col = "black",
-             linetype = 'dashed') +
-  geom_hline(yintercept = -log10(0.01), col = "black", 
-             linetype = 'dashed') +
-  geom_point(size = 2) +
+   geom_point(size = 2) +
   scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
                      labels = c("higher in Oct", "not significant", 
                                 "higher in June")) + 
@@ -874,15 +873,51 @@ ggplot(data = JO_g_df, aes(x = log2FoldChange, y = -log10(padj),
            plot.title = element_text(hjust = 0.5, family = "Arial"),
            axis.text = element_text(color = "black", 
                                     size = rel(1.1)),
-           ))
+           )) +
+   geom_vline(xintercept = c(-5, 5), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.01), col = "black", 
+             linetype = 'dashed') 
 ```
+So now I can see based on the volcano plot that some ASVs are much more significantly abundant than others. I'd like to see what these are specifically by looking at their taxonomy. 
 
 ```{r}
 # combine dataframe with significant ASVs with the taxonomy of the ASVs
 JO_g_df_with_tax <- cbind(as(JO_g_df, "data.frame"), as(tax_table(ASV_physeq)[row.names(JO_g_df), ], "matrix"))
 
-write.csv(JO_g_df_with_tax, "sig_table_month_gDNA_tax.csv")
+write.csv(JO_g_df_with_tax, "data/sig_table_month_gDNA_tax.csv")
 ```
+
+First I am going to just show the orders of everything rather than getting more specific. This will be a bar plot with only the significant ASVs. 
+```{r}
+# make table only with UP and DOWN taxa
+JO_g_df_filtered <- subset(JO_g_df_with_tax, diffexpressed != "NO")
+
+# Group by Order and calculate mean log2FoldChange
+JO_g_df_mean <- JO_g_df_filtered %>%
+  group_by(Order) %>%
+  summarise(AvgLog2FoldChange = mean(log2FoldChange, na.rm = TRUE)) %>%
+  ungroup() %>%
+  filter(Order != "NA") # Ensure we only include rows with a defined family
+
+# Use the average log2FoldChange for plotting
+ggplot(JO_g_df_mean, aes(x = reorder(Order, AvgLog2FoldChange), y = AvgLog2FoldChange)) +
+  geom_bar(stat = "identity", aes(fill = AvgLog2FoldChange > 0), width = 0.7) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(y = "Average Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        legend.position = "none")
+```
+
+Want to look at the differential abundance of families in the gDNA libraries that differ between June and October.
 
 To address the requirement of labeling each ASV with the lowest available taxonomic classification for your plot, starting with the genus and moving up to higher levels as needed, you can create a new column in your dataframe that determines the lowest available taxonomic classification for each ASV. Here's how you can do it in R:
 1.Assuming your dataframe is named df and contains columns for each taxonomic rank (e.g., Kingdom, Phylum, Class, Order, Family, Genus, Species), you will iterate through each row and check from Genus upwards to Kingdom to find the lowest defined taxonomic rank.
@@ -1021,7 +1056,7 @@ deseq_res_rip_vs_up_g <- results(bact_deseq_soil_g, alpha=0.01, contrast=c("soil
 summary(deseq_res_rip_vs_up_g) 
 
 # save the entire table as a .csv
-write.csv(deseq_res_rip_vs_up_g, "sig_table_soil_gDNA_all.csv")
+write.csv(deseq_res_rip_vs_up_g, "data/sig_table_soil_gDNA_all.csv")
 
 # let's subset this table to only include these that pass our specified significance level
 sigtab_res_deseq_rip_vs_up_g <- deseq_res_rip_vs_up_g[which(deseq_res_rip_vs_up_g$padj < 0.01), ]
@@ -1038,7 +1073,7 @@ sigtab_res_deseq_rip_vs_up_g_with_tax <- sigtab_res_deseq_rip_vs_up_g_with_tax[o
 # save the subsetted table of only our significant ASVs as a table
 sig_tab_soil_g <- sigtab_res_deseq_rip_vs_up_g_with_tax[order(sigtab_res_deseq_rip_vs_up_g_with_tax$baseMean, decreasing=T), ]
 
-write.csv(sig_tab_soil_g, "sig_table_soil_gDNA.csv")
+write.csv(sig_tab_soil_g, "data/sig_table_soil_gDNA.csv")
 ```
 
 Within the significant table sig_tab_soil_g, there are two Methyloversatilis ASVs and one Methylophilus ASV.
@@ -1053,19 +1088,15 @@ RU_g_df <- deseq_res_rip_vs_up_g_df[complete.cases(deseq_res_rip_vs_up_g_df), ]
 # add a column of NAs
 RU_g_df$diffexpressed <- "NO"
 # if log2Foldchange > 1 and pvalue < 0.001, set as "UP" 
-RU_g_df$diffexpressed[RU_g_df$log2FoldChange > 10 & RU_g_df$padj < 0.000001] <- "UP"
+RU_g_df$diffexpressed[RU_g_df$log2FoldChange > 5 & RU_g_df$padj < 0.01] <- "UP"
 # if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
-RU_g_df$diffexpressed[RU_g_df$log2FoldChange < -10 & RU_g_df$padj < 0.000001] <- "DOWN"
+RU_g_df$diffexpressed[RU_g_df$log2FoldChange < -5 & RU_g_df$padj < 0.01] <- "DOWN"
 
 
 # plot a volcano plot
 ggplot(data = RU_g_df, aes(x = log2FoldChange, y = -log10(padj),
                          col = diffexpressed)) + 
-  geom_vline(xintercept = c(-10, 10), col = "black",
-             linetype = 'dashed') +
-  geom_hline(yintercept = -log10(0.000001), col = "black", 
-             linetype = 'dashed') +
-  geom_point(size = 2) +
+    geom_point(size = 2) +
   scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
                      labels = c("higher in upland", "not significant", 
                                 "higher in riparian")) + 
@@ -1085,14 +1116,49 @@ ggplot(data = RU_g_df, aes(x = log2FoldChange, y = -log10(padj),
            plot.title = element_text(hjust = 0.5, family = "Arial"),
            axis.text = element_text(color = "black", 
                                     size = rel(1.1)),
-           ))
+           )) +
+  geom_vline(xintercept = c(-5, 5), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.01), col = "black", 
+             linetype = 'dashed') 
 ```
 
 ```{r}
 # combine dataframe with significant ASVs with the taxonomy of the ASVs
 RU_g_df_with_tax <- cbind(as(RU_g_df, "data.frame"), as(tax_table(ASV_physeq)[row.names(RU_g_df), ], "matrix"))
-write.csv(RU_g_df_with_tax, "sig_table_soil_gDNA_tax.csv")
+write.csv(RU_g_df_with_tax, "data/sig_table_soil_gDNA_tax.csv")
 ```
+
+Looking at the Orders that are differentially abundant between gDNA riparian and upland
+```{r}
+# make table only with UP and DOWN taxa
+RU_g_df_filtered <- subset(RU_g_df_with_tax, diffexpressed != "NO")
+
+# Group by Order and calculate mean log2FoldChange
+RU_g_df_mean <- RU_g_df_filtered %>%
+  group_by(Order) %>%
+  summarise(AvgLog2FoldChange = mean(log2FoldChange, na.rm = TRUE)) %>%
+  ungroup() %>%
+  filter(Order != "NA") # Ensure we only include rows with a defined family
+
+# Use the average log2FoldChange for plotting
+ggplot(RU_g_df_mean, aes(x = reorder(Order, AvgLog2FoldChange), y = AvgLog2FoldChange)) +
+  geom_bar(stat = "identity", aes(fill = AvgLog2FoldChange > 0), width = 0.7) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(y = "Average Log2 Fold Change", x = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.ticks.x = element_blank(),
+        legend.position = "none")
+```
+
+
 
 To address the requirement of labeling each ASV with the lowest available taxonomic classification for your plot, starting with the genus and moving up to higher levels as needed, you can create a new column in your dataframe that determines the lowest available taxonomic classification for each ASV. Here's how you can do it in R:
 1.Assuming your dataframe is named df and contains columns for each taxonomic rank (e.g., Kingdom, Phylum, Class, Order, Family, Genus, Species), you will iterate through each row and check from Genus upwards to Kingdom to find the lowest defined taxonomic rank.
