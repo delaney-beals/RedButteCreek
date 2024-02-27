@@ -2,7 +2,7 @@
 title: "RBC 16S analysis: MOB visualizations (genus level)"
 output: github_document
 ---
-hello
+
 Written by Delaney Beals \| Date created: October 19, 2023 \| Date most recent edit: January 23, 2024
 
 # Relative abundance composition plot for genus-level proportions
@@ -29,13 +29,13 @@ library(ggpubr)
 (.packages())
 ```
 
-Making out phyloseq object
+Making our phyloseq object
 
 ```{r}
 # LOAD IN DATA
-bact_count_table <- read.table("June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
-bact_taxa_table <- as.matrix(read.table("June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
-bact_sample_info_table <- read.table("June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",") 
+bact_count_table <- read.table("data/June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+bact_taxa_table <- as.matrix(read.table("data/June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
+bact_sample_info_table <- read.table("data/June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",") 
 
 # first we need to create a phyloseq object using our un-transformed count table
 tax_mat <- as.matrix(bact_taxa_table)
@@ -87,6 +87,48 @@ gen_taxa_proportions_tab <- apply(gen_and_unidentified_counts_tab, 2, function(x
 
 write.table(gen_taxa_proportions_tab, "proportions.tsv", sep = "\t", quote = F, col.names = NA)
 ```
+
+### Unbiased correlation of all by all. 
+First need to split up by gDNA and cDNA
+```{r}
+# transpose table so that samples are in rows, genera are in columns
+gen_taxa_proportions_tab_df <- as.data.frame(t(gen_taxa_proportions_tab))
+
+# read in metadata CSV
+bact_sample_info_table <- read.table("data/June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",")
+
+# Adding information from our metadata to group/color our bubble plot based on different characteristics of our samples
+sample_info_for_merge <- data.frame(
+  "Sample" = row.names(bact_sample_info_table),
+  "soil" = bact_sample_info_table$soil,
+  "replicate"= bact_sample_info_table$replicate,
+  "template" = bact_sample_info_table$template,
+  "soil.temp" = bact_sample_info_table$soil.temp,
+  "month" = bact_sample_info_table$month,
+  "monthsoil" = bact_sample_info_table$monthsoil,
+  "full_name" = bact_sample_info_table$full_name,
+  stringsAsFactors=F)
+
+# merging this table with the table containing our proportions
+gen_taxa <- merge(gen_taxa_proportions_tab, sample_info_for_merge) 
+```
+
+
+```{r}
+# Function to extract correlation coefficient and p-values
+corrFunc <- function(var1, var2, data) {
+  result = cor.test(data[,var1], data[,var2])
+  data.frame(var1, var2, result[c("estimate","p.value","method")], 
+             stringsAsFactors=FALSE)
+}
+
+# Pairs of variables for which we want correlations
+vars1 = data.frame(v1=names(gen_taxa_proportions_tab)[1], v2=names(gen_taxa_proportions_tab)[2:11])
+
+# Apply corrFunc to all rows of vars
+do.call(rbind, mapply(corrFunc, vars1[,1], vars1[,2], MoreArgs=list(data=gen_taxa_proportions_tab), SIMPLIFY=FALSE))
+```
+
 
 ### MOB/NMH subgroup
 
@@ -176,7 +218,7 @@ Looks good. To break this up, I want to load in the metadata so that we can chan
 
 ```{r}
 # read in metadata CSV
-bact_sample_info_table <- read.table("June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",")
+bact_sample_info_table <- read.table("data/June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",")
 
 # Adding information from our metadata to group/color our bubble plot based on different characteristics of our samples
 sample_info_for_merge <- data.frame(
@@ -1161,11 +1203,11 @@ plot_grid(SR.PD + theme(legend.position = 'none'),
           legend, ncol = 6)
 ```
 
-## NMH correlations
+# NMH correlations
 
 ```{r}
 # correlation tests between MOB and NMH's for gDNA only
-MOB_NMH_gDNA <- read.table("MOB_NMH_gDNA.csv", header = T, row.names = 1, sep = ",")
+MOB_NMH_gDNA <- read.table("data/MOB_NMH_gDNA.csv", header = T, row.names = 1, sep = ",")
 ```
 
 ### MOB correlated to NMH (gDNA)
@@ -1318,7 +1360,7 @@ corrplot(corr=g_df$r[15:17, 1:14],
 
 ```{r}
 # correlation tests between MOB and NMH's for cDNA only
-MOB_NMH_cDNA <- read.table("MOB_NMH_cDNA.csv", header = T, row.names = 1, sep = ",")
+MOB_NMH_cDNA <- read.table("data/MOB_NMH_cDNA.csv", header = T, row.names = 1, sep = ",")
 ```
 
 Methylobacter vs. methylotrophs
