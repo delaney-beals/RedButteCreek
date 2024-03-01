@@ -1203,6 +1203,57 @@ plot_grid(SR.PD + theme(legend.position = 'none'),
           legend, ncol = 6)
 ```
 
+
+# correlations between gDNA and cDNA
+```{r}
+MOB_NMH <- read.table("data/prop.csv", header = T, row.names = 1, sep = ",")
+
+# define the columns that contain your abundance data. Change the number after the ":" to subset your data
+abun = MOB_NMH[,1:30]
+
+# create a correlation matrix with the data
+cc_pears_abund = cor(abun, method = "pearson")
+
+# make plot
+corrplot(cc_pears_abund, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.7)
+
+corrplot(cc_pears_abund, tl.col = "black",addrect = 4, tl.cex = 0.7,type = "upper")
+
+# to get P values
+res2 <- cor.mtest(new_com, conf.level = .95)
+
+#merged option
+corrplot.mixed(cc_pears, upper= "circle",   tl.pos = "lt", tl.col = "black", tl.cex = 0.7, p.mat = res2$p, insig = "pch", sig.level = c(.05), pch.cex = 1, pch.col = "black", lower = "number",  number.cex = 0.7, tl.srt = 45)
+
+
+# keep cDNA on top and gDNA on left
+corr_df <- Hmisc::rcorr(as.matrix(MOB_NMH), type=c("pearson"))
+
+
+# plot only the correlations we want
+corrplot(corr=corr_df$r[18:30, 1:17], 
+         p.mat=corr_df$P[18:30, 1:17], 
+         tl.col = "black",
+         tl.srt = 45,
+         insig = "pch", 
+         sig.level = c(.05), 
+         pch.cex = 3, 
+         pch.col = "black", 
+         addCoef.col="black",  
+         number.cex=0.7,
+         number.digits = 2,
+         cl.length = 5,
+         cl.align.text = "l")
+```
+Possible interpretation: 
+
+In cases where the gDNA of a member doesn't correlate with the cDNA abundance of the same member (which is most taxa in the plot), we can think of this as just because an individual is present (gDNA), doesn't mean we automatically see higher transcripts in cDNA. So this gives us more support for looking into the differences between gDNA and cDNA for individuals. 
+
+The presence of Flavobacterium is correlated with the activity of Methylobacter, Methylomonas, Methylophilus, Flavobacterium, etc. But does this mean that the presence of Methylobacter for example doesn't correlate with the activity of anything else? Meaning Methylobacter presence doesn't potentially influence methylotroph/crossfeeding members? Basically means that just because Methylobacter is there, doesn't mean it is correlating with methylotroph activity, we might have to have Methylobacter also be active in order for the crossfeeder's activity to also be different; which makes sense since Methylobacter has to produce byproducts/mystery signals for the partner to interact with and if Methylobacter is dormant, the NMM partner is going to do it's own thing. 
+
+Looking at this from the other direction, the activity of Methylobacter correlates with the presence of Flavobacterium and Methyloligella. These might be potential crossfeeders who rely on the byproducts of Methylobacter to establish themselves. 
+
+
 # NMH correlations
 
 ```{r}
