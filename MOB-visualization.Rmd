@@ -1451,9 +1451,10 @@ do.call(rbind, mapply(corrFunc, vars8[,1], vars8[,2], MoreArgs=list(data=MOB_NMH
 comc = MOB_NMH_cDNA[,1:20]
 
 # re-order genera
-desired_order2 <- c("Methylomonas","Methylobacter","Methyloferula","Methylomicrobium","Methylosinus", "Methylophilus", "Methylorubrum","Methyloversatilis", "Methylobacterium", "Methylotenera", "Methyloceanibacter", "Methylibium", "Methyloligella","Methylopila", "Acidovorax", "Comamonas", "Flavobacterium") 
+desired_order2 <- c("Methylomonas","Methylobacter","Methyloferula", "Methylophilus", "Methylorubrum","Methyloversatilis", "Methylobacterium", "Methylotenera", "Methyloceanibacter", "Methylibium", "Methyloligella","Methylopila", "Acidovorax", "Comamonas", "Flavobacterium", "Methylomicrobium","Methylosinus") 
 
 new_comc <- comc[, desired_order2]
+new_comc = new_comc[,1:15]
 
 # create a correlation matrix with the data
 cc_pearsc = cor(new_comc, method = "pearson")
@@ -1487,6 +1488,25 @@ corrplot.mixed(cc_pearsc, upper= "circle",   tl.pos = "lt", tl.col = "black", tl
 
 
 corrplot.mixed(cc_pearsc, upper= "circle",   tl.pos = "lt", tl.col = "black", tl.cex = 0.7, p.mat = res1$p, insig = "pch", sig.level = c(.05), pch.cex = 1, pch.col = "black", lower = "number", number.cex = 0.5,  tl.srt = 45)
+
+
+new_comc_corr <- Hmisc::rcorr(as.matrix(new_comc), type=c("pearson"))
+
+
+# plot only the correlations we want
+corrplot(corr=new_comc_corr$r[1:15, 1:15], 
+         p.mat=new_comc_corr$P[1:15, 1:15], 
+         tl.col = "black",
+         tl.srt = 45,
+         insig = "pch", 
+         sig.level = c(.05), 
+         pch.cex = 3, 
+         pch.col = "black", 
+         addCoef.col="black",  
+         number.cex=0.7,
+         number.digits = 2,
+         cl.length = 5,
+         cl.align.text = "l")
 ```
 
 

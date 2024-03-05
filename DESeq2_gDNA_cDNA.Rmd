@@ -1,0 +1,665 @@
+---
+title: "gDNA vs. cDNA"
+output: html_notebook
+---
+# All: Bray Curtis 
+ Loading libraries/packages
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse) 
+library(phyloseq)
+library(vegan)
+library(DESeq2)
+library(dendextend)
+library(viridis)
+library(ggplot2)
+library(ecolTest)
+library(ggrepel)
+```
+
+Reading in our data
+
+We need our ASV counts table (samples in columns, ASVs in rows, counts in cells), our taxonmy table (assigning taxonomy to each ASV), and metadata (any additional information about the samples such as soil type, month etc.)
+
+```{r}
+# LOAD IN DATA
+bact_count_table <- read.table("data/June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+
+bact_taxa_table <- as.matrix(read.table("data/June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
+# Need to specify row.names = 1 so that sample names do not appear as their own column. Instead they are the row headings (names).
+
+bact_sample_info_table <- read.table("data/June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",") # We will also load in a metadata table that contains the necessary additional characteristics about the samples (type of culture method)
+```
+
+We also want to generate a phyloseq object which basically just combines all three of the above tables into one. 
+```{r}
+# using the phyloseq package, we will combine our three tables into one phyloseq object
+otu_table <- phyloseq::otu_table(bact_count_table, taxa_are_rows=T)
+tax_table <- phyloseq::tax_table(bact_taxa_table)
+sample_data <- phyloseq::sample_data(bact_sample_info_table)
+
+# now generate the phyloseq object
+ASV_physeq <- phyloseq(otu_table, tax_table, sample_data)
+```
+
+```{r}
+bact_deseq_counts <- DESeqDataSetFromMatrix(bact_count_table, colData = bact_sample_info_table, design = ~template) #first make a DESeq2 object
+
+bact_deseq_counts_vst <- varianceStabilizingTransformation(bact_deseq_counts) 
+
+bact_vst_trans_counts_table <- assay(bact_deseq_counts_vst) #pulling out the transformed table
+
+euc_dist <- dist(t(bact_vst_trans_counts_table)) #calculating our Euclidiean distance matrix
+
+bact_vst_trans_counts_table[bact_vst_trans_counts_table < 0.0] <- 0.0
+```
+Is the Bray Curtis diversity different between our gDNA and cDNA samples? Yes, see below. 
+```{r}
+# transform our vst counts table so that sample names are in rows and ASVs are in columns
+bact_vst_trans_counts_table_t <- as.data.frame(t(bact_vst_trans_counts_table))
+
+euc_dist <- dist(bact_vst_trans_counts_table_t)
+bray_dist <- vegdist(bact_vst_trans_counts_table_t)
+
+set.seed(777) #don't change this
+anova(betadisper(bray_dist, bact_sample_info_table$template)) 
+adonis2(bray_dist ~ bact_sample_info_table$template, permutations = 9999)
+```
+
+What contributes to this diversity? 
+
+## All: MOB volcano plot 
+
+Starting with our ASV counts table 
+```{r}
+# making a phyloseq object of non-transformed values (as that is what DESeq2 operates on
+bact_count_physeq <- 
+  phyloseq(sample_data(as.data.frame(sample_info_table_bact_phy)), 
+           otu_table(as.matrix(bact_count_table),    
+                     taxa_are_rows = TRUE))
+```
+
+Run the DESeq2 using template as the separating factor
+```{r}
+# converting our phyloseq object to a deseq object, this time by month
+bact_deseq_temp <- phyloseq_to_deseq2(bact_count_physeq, ~template)
+
+# and running deseq standard analysis:
+bact_deseq_temp <- DESeq(bact_deseq_temp)
+
+
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about
+deseq_res_gDNA_vs_cDNA <- results(bact_deseq_temp, alpha=0.01, contrast=c("template", "gDNA", "cDNA"))
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_gDNA_vs_cDNA) 
+
+# let's subset this table to only include these that pass our specified significance level
+sigtab_deseq_res_gDNA_vs_cDNA <- deseq_res_gDNA_vs_cDNA[which(deseq_res_gDNA_vs_cDNA$padj < 0.01), ]
+
+# now we can see this table only contains those we consider significantly differentially abundant
+summary(sigtab_deseq_res_gDNA_vs_cDNA)
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+sigtab_deseq_res_gDNA_vs_cDNA_taxa <- cbind(as(sigtab_deseq_res_gDNA_vs_cDNA, "data.frame"), as(tax_table(ASV_physeq)[row.names(sigtab_deseq_res_gDNA_vs_cDNA), ], "matrix"))
+
+# and now let's sort that table by the baseMean column
+sigtab_deseq_res_gDNA_vs_cDNA_taxa <- sigtab_deseq_res_gDNA_vs_cDNA_taxa[order(sigtab_deseq_res_gDNA_vs_cDNA_taxa$baseMean, decreasing=T), ]
+
+# save the subsetted table of only our significant ASVs as a table
+sig_table <- sigtab_deseq_res_gDNA_vs_cDNA_taxa[order(sigtab_deseq_res_gDNA_vs_cDNA_taxa$baseMean, decreasing=T), ]
+```
+Making a volcano plot 
+```{r}
+# remove rows that contain NA where we would want the pvalue; indicates that this ASV was only present in one of our conditions
+gc <- as.data.frame(deseq_res_gDNA_vs_cDNA) 
+gc_df <- gc[complete.cases(gc), ]
+
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+gc_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP"
+gc_df$diffexpressed[gc_df$log2FoldChange > 2 & gc_df$padj < 0.01] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+gc_df$diffexpressed[gc_df$log2FoldChange < -2 & gc_df$padj < 0.01] <- "DOWN"
+```
+
+```{r}
+# combine dataframe with significant ASVs with the taxonomy of the ASVs
+gc_df_with_taxa <- cbind(as(gc_df, "data.frame"), as(tax_table(ASV_physeq)[row.names(gc_df), ], "matrix"))
+
+# Filter rows where 'Genus' matches any pattern in the list
+genusPattern <- "Methylosinus|Methylocystis|Methylocella|Methylocapsa|Methyloferula|Methylomonas|Methylobacter|Methylococcus|Methylomicrobium|Methylosphaera|Methylocaldum|Methylosarcina|Methylogaea|Methylosoma|Methylomarinum|Methylovulum|Methyloprofundus|Clonothrix|Methylothermus|Methylohalobius|Crenothrix|Methylacidiphilum|Methylophilus|Methylobacterium|Methyloversatilis|Methylotenera|Methylorubrum|Methyloceanibacter|Methyloligella|Methylopila|Methylibium|Methylovorus|Methylophaga|Methylobacillus|Flavobacterium|Acidovorax|Comamonas"
+
+gc_df_MOB_NMH <- subset(gc_df_with_taxa, grepl(genusPattern, Genus))
+
+# make table only with UP and DOWN taxa
+gc_df_with_filtered <- subset(gc_df_with_taxa, diffexpressed != "NO")
+
+# sort by log2FC
+gc_df_MOB_NMH <- gc_df_MOB_NMH[order(gc_df_MOB_NMH$log2FoldChange, decreasing = TRUE), ]
+
+# plot volcano plots
+ggplot(data = gc_df_MOB_NMH, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+   geom_point(size = 2) +
+     scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
+                     labels = c("higher in cDNA", "not significant", 
+                                "higher in gDNA")) +
+   coord_cartesian(ylim = c(0, 20)) + 
+  labs(color = 'All: gDNA vs. cDNA', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           )) +
+   geom_vline(xintercept = c(-2, 2), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.01), col = "black", 
+             linetype = 'dashed') +
+  geom_text_repel(aes(label = Genus), nudge_x = 0.25, nudge_y = 0.25, size = 3)
+```
+
+#June: Bray Curtis
+What if we want to look at a specific sample, such as June? 
+We first need to see if the centroids of the Bray Curtis dissimilarity are significantly different. 
+
+```{r}
+# remove rows that contain the string "10" in the column name, leaving only June samples
+bact_count_table_June <- bact_count_table %>% select(-contains("10"))
+
+# modifying our metadata table to contain only information about gDNA samples
+sample_info_table_bact_phy_t <- as.data.frame(t(sample_info_table_bact_phy))
+
+sample_info_table_bact_phy_June <- as.data.frame(t(sample_info_table_bact_phy_t %>% select(-contains("10"))))
+
+# making a phyloseq object of non-transformed values (as that is what DESeq2 operates on
+bact_count_physeq_June <- 
+  phyloseq(sample_data(as.data.frame(sample_info_table_bact_phy_June)), 
+           otu_table(as.matrix(bact_count_table_June),    
+                     taxa_are_rows = TRUE))
+```
+
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by month
+bact_deseq_temp_June <- phyloseq_to_deseq2(bact_count_physeq_June, ~template)
+
+# and running deseq standard analysis:
+bact_deseq_temp_June <- DESeq(bact_deseq_temp_June)
+
+# transform counts
+bact_deseq_counts_vst_June <- varianceStabilizingTransformation(bact_deseq_temp_June) 
+
+bact_vst_trans_counts_table_June <- assay(bact_deseq_counts_vst_June) #pulling out the transformed table
+
+euc_dist_June <- dist(t(bact_vst_trans_counts_table_June)) #calculating our Euclidiean distance matrix
+
+bact_vst_trans_counts_table_June[bact_vst_trans_counts_table_June < 0.0] <- 0.0
+
+```
+
+```{r}
+# transform our vst counts table so that sample names are in rows and ASVs are in columns
+bact_vst_trans_counts_table_t_June <- as.data.frame(t(bact_vst_trans_counts_table_June))
+
+euc_dist_June <- dist(bact_vst_trans_counts_table_t_June)
+bray_dist_June <- vegdist(bact_vst_trans_counts_table_t_June)
+
+set.seed(777) #don't change this
+anova(betadisper(bray_dist_June, sample_info_table_bact_phy_June$template)) 
+adonis2(bray_dist_June ~ sample_info_table_bact_phy_June$template, permutations = 9999)
+```
+
+
+
+
+# October: Bray Curtis
+What if we want to look at a specific sample, such as October? 
+We first need to see if the centroids of the Bray Curtis dissimilarity are significantly different. 
+
+```{r}
+# remove rows that contain the string "10" in the column name, leaving only June samples
+bact_count_table_Oct <- bact_count_table %>% select(-contains("6"))
+
+# modifying our metadata table to contain only information about gDNA samples
+sample_info_table_bact_phy_t <- as.data.frame(t(sample_info_table_bact_phy))
+
+sample_info_table_bact_phy_Oct <- as.data.frame(t(sample_info_table_bact_phy_t %>% select(-contains("6"))))
+
+# making a phyloseq object of non-transformed values (as that is what DESeq2 operates on
+bact_count_physeq_Oct <- 
+  phyloseq(sample_data(as.data.frame(sample_info_table_bact_phy_Oct)), 
+           otu_table(as.matrix(bact_count_table_Oct),    
+                     taxa_are_rows = TRUE))
+```
+
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by month
+bact_deseq_temp_Oct <- phyloseq_to_deseq2(bact_count_physeq_Oct, ~template)
+
+# and running deseq standard analysis:
+bact_deseq_temp_Oct <- DESeq(bact_deseq_temp_Oct)
+
+# transform counts
+bact_deseq_counts_vst_Oct <- varianceStabilizingTransformation(bact_deseq_temp_Oct) 
+
+bact_vst_trans_counts_table_Oct <- assay(bact_deseq_counts_vst_Oct) #pulling out the transformed table
+
+euc_dist_Oct <- dist(t(bact_vst_trans_counts_table_Oct)) #calculating our Euclidiean distance matrix
+
+bact_vst_trans_counts_table_Oct[bact_vst_trans_counts_table_Oct < 0.0] <- 0.0
+
+```
+
+```{r}
+# transform our vst counts table so that sample names are in rows and ASVs are in columns
+bact_vst_trans_counts_table_t_Oct <- as.data.frame(t(bact_vst_trans_counts_table_Oct))
+
+euc_dist_Oct <- dist(bact_vst_trans_counts_table_t_Oct)
+bray_dist_Oct <- vegdist(bact_vst_trans_counts_table_t_Oct)
+
+set.seed(777) #don't change this
+anova(betadisper(bray_dist_Oct, sample_info_table_bact_phy_Oct$template)) 
+adonis2(bray_dist_Oct ~ sample_info_table_bact_phy_Oct$template, permutations = 9999)
+```
+
+## October: volcano
+```{r}
+# making a phyloseq object of non-transformed values (as that is what DESeq2 operates on
+bact_count_physeq_Oct <- 
+  phyloseq(sample_data(as.data.frame(sample_info_table_bact_phy_Oct)), 
+           otu_table(as.matrix(bact_count_table_Oct),    
+                     taxa_are_rows = TRUE))
+```
+
+Run the DESeq2 using template as the separating factor
+```{r}
+# converting our phyloseq object to a deseq object, this time by month
+bact_deseq_temp_Oct <- phyloseq_to_deseq2(bact_count_physeq_Oct, ~template)
+
+# and running deseq standard analysis:
+bact_deseq_temp_Oct <- DESeq(bact_deseq_temp_Oct)
+
+
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about
+deseq_res_gDNA_vs_cDNA <- results(bact_deseq_temp_Oct, alpha=0.01, contrast=c("template", "gDNA", "cDNA"))
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_gDNA_vs_cDNA) 
+
+# let's subset this table to only include these that pass our specified significance level
+sigtab_deseq_res_gDNA_vs_cDNA <- deseq_res_gDNA_vs_cDNA[which(deseq_res_gDNA_vs_cDNA$padj < 0.01), ]
+
+# now we can see this table only contains those we consider significantly differentially abundant
+summary(sigtab_deseq_res_gDNA_vs_cDNA)
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+sigtab_deseq_res_gDNA_vs_cDNA_taxa <- cbind(as(sigtab_deseq_res_gDNA_vs_cDNA, "data.frame"), as(tax_table(ASV_physeq)[row.names(sigtab_deseq_res_gDNA_vs_cDNA), ], "matrix"))
+
+# and now let's sort that table by the baseMean column
+sigtab_deseq_res_gDNA_vs_cDNA_taxa <- sigtab_deseq_res_gDNA_vs_cDNA_taxa[order(sigtab_deseq_res_gDNA_vs_cDNA_taxa$baseMean, decreasing=T), ]
+
+# save the subsetted table of only our significant ASVs as a table
+sig_table <- sigtab_deseq_res_gDNA_vs_cDNA_taxa[order(sigtab_deseq_res_gDNA_vs_cDNA_taxa$baseMean, decreasing=T), ]
+```
+
+
+Making a volcano plot of October riparian gDNA vs. cDNA
+```{r}
+# remove rows that contain NA where we would want the pvalue; indicates that this ASV was only present in one of our conditions
+gc <- as.data.frame(deseq_res_gDNA_vs_cDNA) 
+gc_df <- gc[complete.cases(gc), ]
+
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+gc_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP"
+gc_df$diffexpressed[gc_df$log2FoldChange > 2 & gc_df$padj < 0.01] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+gc_df$diffexpressed[gc_df$log2FoldChange < -2 & gc_df$padj < 0.01] <- "DOWN"
+```
+
+```{r}
+# combine dataframe with significant ASVs with the taxonomy of the ASVs
+gc_df_with_taxa <- cbind(as(gc_df, "data.frame"), as(tax_table(ASV_physeq)[row.names(gc_df), ], "matrix"))
+
+# Filter rows where 'Genus' matches any pattern in the list
+genusPattern <- "Methylosinus|Methylocystis|Methylocella|Methylocapsa|Methyloferula|Methylomonas|Methylobacter|Methylococcus|Methylomicrobium|Methylosphaera|Methylocaldum|Methylosarcina|Methylogaea|Methylosoma|Methylomarinum|Methylovulum|Methyloprofundus|Clonothrix|Methylothermus|Methylohalobius|Crenothrix|Methylacidiphilum|Methylophilus|Methylobacterium|Methyloversatilis|Methylotenera|Methylorubrum|Methyloceanibacter|Methyloligella|Methylopila|Methylibium|Methylovorus|Methylophaga|Methylobacillus|Flavobacterium|Acidovorax|Comamonas"
+
+gc_df_MOB_NMH <- subset(gc_df_with_taxa, grepl(genusPattern, Genus))
+
+# make table only with UP and DOWN taxa
+gc_df_with_filtered <- subset(gc_df_with_taxa, diffexpressed != "NO")
+
+# sort by log2FC
+gc_df_MOB_NMH <- gc_df_MOB_NMH[order(gc_df_MOB_NMH$log2FoldChange, decreasing = TRUE), ]
+
+# plot volcano plots
+ggplot(data = gc_df_MOB_NMH, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+   geom_point(size = 2) +
+     scale_color_manual(values = c("grey", "#ca0020"), 
+                     labels = c("not significant", 
+                                "higher in gDNA")) +
+   coord_cartesian(ylim = c(0, 20)) + 
+  labs(color = 'Oct: gDNA vs. cDNA', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           )) +
+   geom_vline(xintercept = c(-2, 2), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.01), col = "black", 
+             linetype = 'dashed') +
+  geom_text_repel(aes(label = Family), nudge_x = 0.25, nudge_y = 0.25, size = 3)
+```
+
+# riparian: Bray Curtis
+What if we want to look at a specific sample, such as October? 
+We first need to see if the centroids of the Bray Curtis dissimilarity are significantly different. 
+
+```{r}
+# remove rows that contain the string "10" in the column name, leaving only June samples
+bact_count_table_rip <- bact_count_table %>% select(-contains("U"))
+
+# modifying our metadata table to contain only information about gDNA samples
+sample_info_table_bact_phy_t <- as.data.frame(t(sample_info_table_bact_phy))
+
+sample_info_table_bact_phy_rip <- as.data.frame(t(sample_info_table_bact_phy_t %>% select(-contains("U"))))
+
+# making a phyloseq object of non-transformed values (as that is what DESeq2 operates on
+bact_count_physeq_rip <- 
+  phyloseq(sample_data(as.data.frame(sample_info_table_bact_phy_rip)), 
+           otu_table(as.matrix(bact_count_table_rip),    
+                     taxa_are_rows = TRUE))
+```
+
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by month
+bact_deseq_temp_rip <- phyloseq_to_deseq2(bact_count_physeq_rip, ~template)
+
+# and running deseq standard analysis:
+bact_deseq_temp_rip <- DESeq(bact_deseq_temp_rip)
+
+# transform counts
+bact_deseq_counts_vst_rip <- varianceStabilizingTransformation(bact_deseq_temp_rip) 
+
+bact_vst_trans_counts_table_rip <- assay(bact_deseq_counts_vst_rip) #pulling out the transformed table
+
+euc_dist_rip <- dist(t(bact_vst_trans_counts_table_rip)) #calculating our Euclidiean distance matrix
+
+bact_vst_trans_counts_table_rip[bact_vst_trans_counts_table_rip < 0.0] <- 0.0
+
+```
+
+```{r}
+# transform our vst counts table so that sample names are in rows and ASVs are in columns
+bact_vst_trans_counts_table_t_rip <- as.data.frame(t(bact_vst_trans_counts_table_rip))
+
+euc_dist_rip <- dist(bact_vst_trans_counts_table_t_rip)
+bray_dist_rip <- vegdist(bact_vst_trans_counts_table_t_rip)
+
+set.seed(777) #don't change this
+anova(betadisper(bray_dist_rip, sample_info_table_bact_phy_rip$template)) 
+adonis2(bray_dist_rip ~ sample_info_table_bact_phy_rip$template, permutations = 9999)
+```
+
+
+## riparian: volcano
+
+Run the DESeq2 using template as the separating factor
+```{r}
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about
+deseq_res_gDNA_vs_cDNA <- results(bact_deseq_temp_rip, alpha=0.01, contrast=c("template", "gDNA", "cDNA"))
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_gDNA_vs_cDNA) 
+
+# let's subset this table to only include these that pass our specified significance level
+sigtab_deseq_res_gDNA_vs_cDNA <- deseq_res_gDNA_vs_cDNA[which(deseq_res_gDNA_vs_cDNA$padj < 0.01), ]
+
+# now we can see this table only contains those we consider significantly differentially abundant
+summary(sigtab_deseq_res_gDNA_vs_cDNA)
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+sigtab_deseq_res_gDNA_vs_cDNA_taxa <- cbind(as(sigtab_deseq_res_gDNA_vs_cDNA, "data.frame"), as(tax_table(ASV_physeq)[row.names(sigtab_deseq_res_gDNA_vs_cDNA), ], "matrix"))
+
+# and now let's sort that table by the baseMean column
+sigtab_deseq_res_gDNA_vs_cDNA_taxa <- sigtab_deseq_res_gDNA_vs_cDNA_taxa[order(sigtab_deseq_res_gDNA_vs_cDNA_taxa$baseMean, decreasing=T), ]
+
+# save the subsetted table of only our significant ASVs as a table
+sig_table <- sigtab_deseq_res_gDNA_vs_cDNA_taxa[order(sigtab_deseq_res_gDNA_vs_cDNA_taxa$baseMean, decreasing=T), ]
+```
+
+
+Making a volcano plot of riparian gDNA vs. cDNA
+```{r}
+# remove rows that contain NA where we would want the pvalue; indicates that this ASV was only present in one of our conditions
+gc <- as.data.frame(deseq_res_gDNA_vs_cDNA) 
+gc_df <- gc[complete.cases(gc), ]
+
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+gc_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP"
+gc_df$diffexpressed[gc_df$log2FoldChange > 2 & gc_df$padj < 0.01] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+gc_df$diffexpressed[gc_df$log2FoldChange < -2 & gc_df$padj < 0.01] <- "DOWN"
+```
+
+```{r}
+# combine dataframe with significant ASVs with the taxonomy of the ASVs
+gc_df_with_taxa <- cbind(as(gc_df, "data.frame"), as(tax_table(ASV_physeq)[row.names(gc_df), ], "matrix"))
+
+# Filter rows where 'Genus' matches any pattern in the list
+genusPattern <- "Methylosinus|Methylocystis|Methylocella|Methylocapsa|Methyloferula|Methylomonas|Methylobacter|Methylococcus|Methylomicrobium|Methylosphaera|Methylocaldum|Methylosarcina|Methylogaea|Methylosoma|Methylomarinum|Methylovulum|Methyloprofundus|Clonothrix|Methylothermus|Methylohalobius|Crenothrix|Methylacidiphilum|Methylophilus|Methylobacterium|Methyloversatilis|Methylotenera|Methylorubrum|Methyloceanibacter|Methyloligella|Methylopila|Methylibium|Methylovorus|Methylophaga|Methylobacillus|Flavobacterium|Acidovorax|Comamonas"
+
+gc_df_MOB_NMH <- subset(gc_df_with_taxa, grepl(genusPattern, Genus))
+
+# make table only with UP and DOWN taxa
+gc_df_with_filtered <- subset(gc_df_with_taxa, diffexpressed != "NO")
+
+# sort by log2FC
+gc_df_MOB_NMH <- gc_df_MOB_NMH[order(gc_df_MOB_NMH$log2FoldChange, decreasing = TRUE), ]
+
+# plot volcano plots
+ggplot(data = gc_df_MOB_NMH, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+   geom_point(size = 2) +
+      scale_color_manual(values = c("#0571b0", "grey", "#ca0020"), 
+                     labels = c("higher in cDNA", "not significant", 
+                                "higher in gDNA")) +
+   coord_cartesian(ylim = c(0, 20)) + 
+  labs(color = 'Riparian: gDNA vs. cDNA', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           )) +
+   geom_vline(xintercept = c(-2, 2), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.01), col = "black", 
+             linetype = 'dashed') +
+  geom_text_repel(aes(label = Family), nudge_x = 0.25, nudge_y = 0.25, size = 3)
+```
+
+# upland: Bray Curtis
+What if we want to look at a specific sample, such as October? 
+We first need to see if the centroids of the Bray Curtis dissimilarity are significantly different. 
+
+```{r}
+# remove rows that contain the string "10" in the column name, leaving only June samples
+bact_count_table_up <- bact_count_table %>% select(-contains("R"))
+
+# modifying our metadata table to contain only information about gDNA samples
+sample_info_table_bact_phy_t <- as.data.frame(t(sample_info_table_bact_phy))
+
+sample_info_table_bact_phy_up <- as.data.frame(t(sample_info_table_bact_phy_t %>% select(-contains("R"))))
+
+# making a phyloseq object of non-transformed values (as that is what DESeq2 operates on
+bact_count_physeq_up <- 
+  phyloseq(sample_data(as.data.frame(sample_info_table_bact_phy_up)), 
+           otu_table(as.matrix(bact_count_table_up),    
+                     taxa_are_rows = TRUE))
+```
+
+
+```{r}
+# converting our phyloseq object to a deseq object, this time by month
+bact_deseq_temp_up <- phyloseq_to_deseq2(bact_count_physeq_up, ~template)
+
+# and running deseq standard analysis:
+bact_deseq_temp_up <- DESeq(bact_deseq_temp_up)
+
+# transform counts
+bact_deseq_counts_vst_up <- varianceStabilizingTransformation(bact_deseq_temp_up) 
+
+bact_vst_trans_counts_table_up<- assay(bact_deseq_counts_vst_up) #pulling out the transformed table
+
+euc_dist_up<- dist(t(bact_vst_trans_counts_table_up)) #calculating our Euclidiean distance matrix
+
+bact_vst_trans_counts_table_up[bact_vst_trans_counts_table_up < 0.0] <- 0.0
+
+```
+
+```{r}
+# transform our vst counts table so that sample names are in rows and ASVs are in columns
+bact_vst_trans_counts_table_t_up <- as.data.frame(t(bact_vst_trans_counts_table_up))
+
+euc_dist_up <- dist(bact_vst_trans_counts_table_t_up)
+bray_dist_up <- vegdist(bact_vst_trans_counts_table_t_up)
+
+set.seed(777) #don't change this
+anova(betadisper(bray_dist_up, sample_info_table_bact_phy_up$template)) 
+adonis2(bray_dist_up ~ sample_info_table_bact_phy_up$template, permutations = 9999)
+```
+
+## riparian: volcano
+
+Run the DESeq2 using template as the separating factor
+```{r}
+# pulling out our results table, we specify the object, the p-value we are going to use to filter our results, and what contrast we want to consider by first naming the column, then the two groups we care about
+deseq_res_gDNA_vs_cDNA <- results(bact_deseq_temp_up, alpha=0.01, contrast=c("template", "gDNA", "cDNA"))
+
+# we can get a glimpse at what this table currently holds with the summary command
+summary(deseq_res_gDNA_vs_cDNA) 
+
+# let's subset this table to only include these that pass our specified significance level
+sigtab_deseq_res_gDNA_vs_cDNA <- deseq_res_gDNA_vs_cDNA[which(deseq_res_gDNA_vs_cDNA$padj < 0.01), ]
+
+# now we can see this table only contains those we consider significantly differentially abundant
+summary(sigtab_deseq_res_gDNA_vs_cDNA)
+
+# next let's stitch that together with these ASV's taxonomic annotations for a quick look at both together
+sigtab_deseq_res_gDNA_vs_cDNA_taxa <- cbind(as(sigtab_deseq_res_gDNA_vs_cDNA, "data.frame"), as(tax_table(ASV_physeq)[row.names(sigtab_deseq_res_gDNA_vs_cDNA), ], "matrix"))
+
+# and now let's sort that table by the baseMean column
+sigtab_deseq_res_gDNA_vs_cDNA_taxa <- sigtab_deseq_res_gDNA_vs_cDNA_taxa[order(sigtab_deseq_res_gDNA_vs_cDNA_taxa$baseMean, decreasing=T), ]
+
+# save the subsetted table of only our significant ASVs as a table
+sig_table <- sigtab_deseq_res_gDNA_vs_cDNA_taxa[order(sigtab_deseq_res_gDNA_vs_cDNA_taxa$baseMean, decreasing=T), ]
+```
+
+
+Making a volcano plot of riparian gDNA vs. cDNA
+```{r}
+# remove rows that contain NA where we would want the pvalue; indicates that this ASV was only present in one of our conditions
+gc <- as.data.frame(deseq_res_gDNA_vs_cDNA) 
+gc_df <- gc[complete.cases(gc), ]
+
+# The significantly differentially expressed genes are the ones found in the upper-left and upper-right corners.
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+
+# add a column of NAs
+gc_df$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.001, set as "UP"
+gc_df$diffexpressed[gc_df$log2FoldChange > 2 & gc_df$padj < 0.01] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.001, set as "DOWN"
+gc_df$diffexpressed[gc_df$log2FoldChange < -2 & gc_df$padj < 0.01] <- "DOWN"
+```
+
+```{r}
+# combine dataframe with significant ASVs with the taxonomy of the ASVs
+gc_df_with_taxa <- cbind(as(gc_df, "data.frame"), as(tax_table(ASV_physeq)[row.names(gc_df), ], "matrix"))
+
+# Filter rows where 'Genus' matches any pattern in the list
+genusPattern <- "Methylosinus|Methylocystis|Methylocella|Methylocapsa|Methyloferula|Methylomonas|Methylobacter|Methylococcus|Methylomicrobium|Methylosphaera|Methylocaldum|Methylosarcina|Methylogaea|Methylosoma|Methylomarinum|Methylovulum|Methyloprofundus|Clonothrix|Methylothermus|Methylohalobius|Crenothrix|Methylacidiphilum|Methylophilus|Methylobacterium|Methyloversatilis|Methylotenera|Methylorubrum|Methyloceanibacter|Methyloligella|Methylopila|Methylibium|Methylovorus|Methylophaga|Methylobacillus|Flavobacterium|Acidovorax|Comamonas"
+
+gc_df_MOB_NMH <- subset(gc_df_with_taxa, grepl(genusPattern, Genus))
+
+# make table only with UP and DOWN taxa
+gc_df_with_filtered <- subset(gc_df_with_taxa, diffexpressed != "NO")
+
+# sort by log2FC
+gc_df_MOB_NMH <- gc_df_MOB_NMH[order(gc_df_MOB_NMH$log2FoldChange, decreasing = TRUE), ]
+
+# plot volcano plots
+ggplot(data = gc_df_MOB_NMH, aes(x = log2FoldChange, y = -log10(padj),
+                         col = diffexpressed)) + 
+   geom_point(size = 2) +
+      scale_color_manual(values = c("grey", "#ca0020"), 
+                     labels = c("not significant", 
+                                "higher in gDNA")) +
+   coord_cartesian(ylim = c(0, 20)) + 
+  labs(color = 'Upland: gDNA vs. cDNA', 
+       x = expression("log"[2]*" fold change"), 
+       y = expression("-log"[10]*"(padj-value)")) + 
+ (theme_classic(base_size = 15) +
+     theme(axis.title.y = element_text(face = "bold", 
+                                       margin = margin(0,2,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           axis.title.x = element_text(hjust = 0.5, face = "bold",
+                                       margin = margin(2,0,0,0), 
+                                       size = rel(1.1), 
+                                       color = 'black'),
+           plot.title = element_text(hjust = 0.5, family = "Arial"),
+           axis.text = element_text(color = "black", 
+                                    size = rel(1.1)),
+           )) +
+   geom_vline(xintercept = c(-2, 2), col = "black",
+             linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.01), col = "black", 
+             linetype = 'dashed') +
+  geom_text_repel(aes(label = Family), nudge_x = 0.25, nudge_y = 0.25, size = 3)
+```
