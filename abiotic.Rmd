@@ -3,8 +3,6 @@ title: 'RBC 16S analysis: abiotic variables'
 output: html_document
 ---
 
-Written by Delaney Beals \| Date created: October 26, 2023 \| Date most recent edit: December 11, 2023
-
 Resource: <https://rstudio-pubs-static.s3.amazonaws.com/548738_f2de141dddb146879c535583eb8ba79c.html>
 
 Here we want to determine if there is a relationship between different environmental parameters that don't involve the microbial communities of the soil. We are mostly interested in the relationship between methane flux and other variables. Data was obtained from the Knowlton Fork (KF) 2021 datasheets available on HydroShare.
@@ -363,7 +361,7 @@ Methane flux
 
 ```{r}
 # load in data
-flux1 <- read.table("flux_data.csv", header = T, row.names = 1, sep = ",")
+flux1 <- read.table("data/flux_data.csv", header = T, row.names = 1, sep = ",")
 
 # make sure months don't get re-organized alphabetically
 month_order <- flux1 %>%
@@ -395,7 +393,7 @@ Now we will look at the data that was collected at the site of the methane flux 
 
 ```{r}
 # load in data
-KF_df <- read.table("KF_data_for_plot.csv", header = T, row.names = 1, sep = ",")
+KF_df <- read.table("data/KF_data_for_plot.csv", header = T, row.names = 1, sep = ",")
 
 # plot
 KF_plot <- ggplot(KF_df, aes(x=month, y=mean, fill=enviro)) +
@@ -421,6 +419,12 @@ KF_plot <- ggplot(KF_df, aes(x=month, y=mean, fill=enviro)) +
 
 print(KF_plot)
 ```
+Plot methane flux and environmental data plots side by side
+```{r}
+plot_grid(CH4_plot, KF_plot, nrow = 1, rel_widths = c(1,1))
+```
+
+
 
 Plot all three plots together
 ```{r}
