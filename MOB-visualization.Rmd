@@ -25,6 +25,7 @@ library(dplyr)
 library(forcats)
 library(patchwork)
 library(ggpubr)
+library(reshape2)
 
 (.packages())
 ```
@@ -587,6 +588,116 @@ legend2 <- get_legend(cDNA_plot)
 
 # make grid with new plots
 plot_grid(gDNA_plot, cDNA_plot + theme(legend.position = "none"), legend2, nrow = 1, ncol= 3,  rel_widths =  c(1, 0.6, 0.6))
+```
+## Heatmap of MOB relative abundance
+```{r}
+# Assuming you have a data frame 'df' with the first column being the taxa
+# and the remaining columns being the relative abundances for each sample.
+# Sample names in the column names should include 'g' or 'c' to indicate gDNA or cDNA.
+MOB_NMH1 <- read.table("data/prop.csv", header = T,  sep = ",")
+# change first column name
+names(MOB_NMH1)[1] <- "Sample"
+
+
+# pivot to long format
+data_long <- pivot_longer(
+  MOB_NMH1,
+  cols = -Sample, # Exclude the column that should not be pivoted
+  names_to = "Genus", # This will be the new column for the library types
+  values_to = "Relative_Abundance" # This will be the new column for the values
+)
+
+# Convert Genus to factor and order it based on Relative_Abundance
+data_long$Genus <- factor(data_long$Genus, levels = unique(data_long$Genus[order(data_long$Relative_Abundance)]))
+
+# Separate the library type into template, month, soil types
+data_long1 <- data_long %>%
+  mutate(
+    Template = ifelse(startsWith(as.character(Genus), "c"), "cDNA", "gDNA"),
+    Genus = gsub("^[cg]", "", Genus), # Remove c or g from the start
+     # Classify as cDNA or gDNA
+    Month = ifelse(startsWith(Sample, "6"), "June", 
+            ifelse(startsWith(Sample, "10"), "October", NA_character_)), # Assign month
+    Soil = case_when(
+      grepl("U", Sample) ~ "upland",
+      grepl("R", Sample) ~ "riparian",
+      TRUE ~ NA_character_), 
+    MonthSoil = factor(paste(Month, Soil))
+  )
+
+
+
+# Now create the heatmap 
+ggplot(data_long1, aes(x = Month, y = Genus, fill = Relative_Abundance)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "blue", high = "red") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Sample", y = "Genus", fill = "Relative Abundance") + facet_wrap(~ Sample, scales = "free_x", ncol = 6)
+
+ggplot(data_long1, aes(x = Sample, y = Genus, fill = Relative_Abundance)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "blue", high = "red") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Sample", y = "Genus", fill = "Relative Abundance") +
+  facet_grid(Soil ~ Month, scales = "free_x", space = "free_x")
+
+ggplot(data_long1, aes(x = MonthSoil, y = Genus, fill = Relative_Abundance)) +
+  geom_tile(color = "white") + # Draw the tiles
+  facet_wrap(~ Template, scales = "free_y", nrow = 2) + # Separate facets for gDNA and cDNA
+  scale_fill_gradient(low = "blue", high = "red") + # Gradient fill based on abundance
+  theme_minimal() + # Minimal theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1), # Angle the x-axis text
+    axis.text.y = element_text(size = 7) # Adjust size of y-axis text if needed
+  ) +
+  labs(x = "Month and Soil Type", y = "Genus", fill = "Relative Abundance") # Labels
+
+
+
+# try again
+data_long2 <- data_long1 %>%
+  unite("MonthSoilTemplate", Month, Soil, Template, sep = "_", remove = FALSE)
+
+# Now plot with ggplot2 using the updated MonthSoilTemplate for x-axis positioning
+ggplot(data_long2, aes(x = MonthSoilTemplate, y = Genus, fill = Relative_Abundance)) +
+  geom_tile(color = "white") + # Draw the tiles
+  scale_fill_gradient(low = "blue", high = "red") + # Gradient fill based on abundance
+  theme_minimal() + # Minimal theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7), # Angle the x-axis text and adjust size
+    axis.text.y = element_text(size = 7) # Adjust size of y-axis text if needed
+  ) +
+  labs(x = "Month, Soil Type, and DNA Type", y = "Genus", fill = "Relative Abundance") # Labels
+
+# transform rel abund to log scale
+data_long2 <- data_long2 %>%
+  mutate(Relative_Abundance_Log10 = log10(Relative_Abundance + 1))
+
+ggplot(data_long2, aes(x = MonthSoilTemplate, y = Genus, fill = Relative_Abundance_Log10)) +
+  geom_tile(color = "white") + # Draw the tiles
+  scale_fill_gradient(low = "blue", high = "red") + # Gradient fill based on abundance
+  theme_minimal() + # Minimal theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7), # Angle the x-axis text and adjust size
+    axis.text.y = element_text(size = 7) # Adjust size of y-axis text if needed
+  ) +
+  labs(x = "Month, Soil Type, and DNA Type", y = "Genus", fill = "Relative Abundance")
+```
+```{r}
+subset_data <- data_long2 %>%
+  filter(Genus %in% c("Methylobacter", "Methylomonas"), !MonthSoil %in% c("October upland"))
+
+ggplot(subset_data, aes(x = MonthSoilTemplate, y = Genus, fill = Relative_Abundance_Log10)) +
+  geom_tile(color = "white") + # Draw the tiles
+  scale_fill_gradient(low = "blue", high = "red") + # Gradient fill based on abundance
+  theme_minimal() + # Minimal theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7), # Angle the x-axis text and adjust size
+    axis.text.y = element_text(size = 7) # Adjust size of y-axis text if needed
+  ) +
+  labs(x = "Month, Soil Type, and DNA Type", y = "Genus", fill = "Relative Abundance")
 ```
 
 
