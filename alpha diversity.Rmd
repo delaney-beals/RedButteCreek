@@ -48,9 +48,9 @@ Making a phyloseq object
 
 ```{r}
 # LOAD IN DATA
-bact_count_table <- read.table("June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
-bact_taxa_table <- as.matrix(read.table("June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
-bact_sample_info_table <- read.table("June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",") 
+bact_count_table <- read.table("data/June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+bact_taxa_table <- as.matrix(read.table("data/June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
+bact_sample_info_table <- read.table("data/June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",") 
 
 # first we need to create a phyloseq object using our un-transformed count table
 tax_mat <- as.matrix(bact_taxa_table)
@@ -67,7 +67,7 @@ ASV_physeq <- phyloseq(TAX, OTU, samples)
 
 ```{r}
 # load metadata
-bact_sample_info_tablex <- read.table("June_Oct_16S_MERGE_metadata_x.csv", header = T, sep = ",") 
+bact_sample_info_tablex <- read.table("data/June_Oct_16S_MERGE_metadata_x.csv", header = T, sep = ",") 
 
 # calculate all alpha diversity measures 
 estimate <- estimate_richness(ASV_physeq)
@@ -211,7 +211,7 @@ alpha_plot
 
 ```{r}
 # read in NMDS info
-metadata_NMDSx <- read.table("metadata_NMDS.csv", header = T, row.names = 1, sep = ",") 
+metadata_NMDSx <- read.table("data/metadata_NMDS.csv", header = T, row.names = 1, sep = ",") 
 metadata_NMDSx <- as.data.frame(metadata_NMDSx)
 # custom color plot
 fill_col = c("#b2182b", "#fb9a99", "#2166ac", "#a6cee3")

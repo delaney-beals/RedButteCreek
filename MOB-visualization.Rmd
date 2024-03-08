@@ -288,167 +288,7 @@ plot_grid(zoom_plot, overall_plott, nrow = 1, rel_widths = c(1,1))
 
 
 ## Bubble plot: MOB/NMH relative abundance
-
-```{r}
-# Bubble plot with replicates of the same sample having the same color
-colours = c("#b2182b", "#2166ac","#ff8c00", "#bb4500", "#bf3eff","#caff70","#6e8b3d","#00ffff")
-
-ggplot(prop_info, aes(x = Sample, y = Genera)) + 
-  geom_point(aes(size = Proportion, fill = replicate), 
-             alpha = 5, shape = 21) + 
-  scale_size_continuous(limits = c(0.00001, 10), range = c(1,10),
-                        breaks = c(0.1, 1, 10)) + 
-  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
-  theme(legend.key=element_blank(), 
-        axis.text.x = element_text(colour = "black", size = 12, 
-                                   face = "bold", angle = 90, 
-                                   vjust = 0.3, hjust = 1),
-        axis.text.y = element_text(colour = "black", face = "bold",
-                                   size = 11), 
-        legend.text = element_text(size = 10, face ="bold", 
-                                   colour ="black"), 
-        legend.title = element_text(size = 12, face = "bold"), 
-        panel.background = element_blank(), 
-        panel.border = element_rect(colour = "black", fill = NA, 
-                                    linewidth   = 1.2), 
-        legend.position = "right") +  
-  scale_fill_manual(values = colours, guide = "none") +
-  scale_y_discrete(limits = rev(levels(prop_info$Genera)))
-```
-
-We can also break up the gDNA and cDNA samples.
-
-```{r}
-# Create variables containing either template
-gDNA_wanted <- c("gDNA")
-cDNA_wanted <- c("cDNA")
-
-# create two versions of our proportion table with either gDNA or cDNA only
-prop_info_gDNA <-prop_info %>% filter(template %in% gDNA_wanted)
-prop_info_cDNA <-prop_info %>% filter(template %in% cDNA_wanted)
-```
-
-Now we will make a bubble plot of each, then put them side by side
-
-```{r}
-# Bubble plot with replicates of the same sample having the same color
-colours = c("#e41a1c", "#377eb8","#4daf4a", "#984ea3")
-
-ggplot(prop_info_gDNA, aes(x = Sample, y = Genera)) + 
-  geom_point(aes(size = Proportion, fill = replicate), 
-             alpha = 5, shape = 21) + 
-  scale_size_continuous(limits = c(0.00001, 10), range = c(1,10),
-                        breaks = c(0.1, 1, 10)) + 
-  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
-  theme(legend.key=element_blank(), 
-        axis.text.x = element_text(colour = "black", size = 12, 
-                                   face = "bold", angle = 90, 
-                                   vjust = 0.3, hjust = 1),
-        axis.text.y = element_text(colour = "black", face = "bold",
-                                   size = 11), 
-        legend.text = element_text(size = 10, face ="bold", 
-                                   colour ="black"), 
-        legend.title = element_text(size = 12, face = "bold"), 
-        panel.background = element_blank(), 
-        panel.border = element_rect(colour = "black", fill = NA, 
-                                    size = 1.2), 
-        legend.position = "right") +  
-  scale_fill_manual(values = colours, guide = FALSE) +
-  scale_y_discrete(limits = rev(levels(prop_info$Genera)))
-```
-
-```{r}
-# Bubble plot with replicates of the same sample having the same color
-colours = c("#e41a1c", "#377eb8","#4daf4a", "#984ea3")
-
-ggplot(prop_info_cDNA, aes(x = Sample, y = Genera)) + 
-  geom_point(aes(size = Proportion, fill = replicate), 
-             alpha = 5, shape = 21) + 
-  scale_size_continuous(limits = c(0.00001, 10), range = c(1,10),
-                        breaks = c(0.1, 1, 10)) + 
-  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
-  theme(legend.key=element_blank(), 
-        axis.text.x = element_text(colour = "black", size = 12, 
-                                   face = "bold", angle = 90, 
-                                   vjust = 0.3, hjust = 1),
-        axis.text.y = element_text(colour = "black", face = "bold",
-                                   size = 11), 
-        legend.text = element_text(size = 10, face ="bold", 
-                                   colour ="black"), 
-        legend.title = element_text(size = 12, face = "bold"), 
-        panel.background = element_blank(), 
-        panel.border = element_rect(colour = "black", fill = NA, 
-                                    size = 1.2), 
-        legend.position = "right") +  
-  scale_fill_manual(values = colours, guide = FALSE) +
-  scale_y_discrete(limits = rev(levels(prop_info$Genera)))
-```
-
-Looks good. Now we want to put them side by side but get rid of the labels and legends that will be redundant once in the grid.
-
-```{r}
-# change legend.position = "none" to remove legend, change margin sizes
-gDNA_plot <- 
-  ggplot(prop_info_gDNA, aes(x = Sample, y = Genera)) + 
-  geom_point(aes(size = Proportion, fill = replicate), 
-             alpha = 5, shape = 21) + 
-  scale_size_continuous(limits = c(0.00001, 10), range = c(1,10),
-                        breaks = c(0.1, 1, 10)) + 
-  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
-  theme(legend.key=element_blank(), 
-        axis.text.x = element_text(colour = "black", size = 12, 
-                                   face = "bold", angle = 90, 
-                                   vjust = 0.3, hjust = 1),
-        axis.text.y = element_text(colour = "black", face = "bold",
-                                   size = 11), 
-        legend.text = element_text(size = 10, face ="bold", 
-                                   colour ="black"), 
-        legend.title = element_text(size = 12, face = "bold"), 
-        panel.background = element_blank(), 
-        panel.border = element_rect(colour = "black", fill = NA, 
-                                    size = 1.2), 
-        legend.position = "none", 
-        plot.margin = unit(c(5.5, 1.5, 5.5, 5.5), "pt")) +  
-  scale_fill_manual(values = colours, guide = FALSE) +
-  scale_y_discrete(limits = rev(levels(prop_info$Genera)))
-
-gDNA_plot
-```
-
-```{r}
-# change margins, remove Y axis labels
-cDNA_plot <- 
-  ggplot(prop_info_cDNA, aes(x = Sample, y = Genera)) + 
-  geom_point(aes(size = Proportion, fill = replicate), 
-             alpha = 5, shape = 21) + 
-  scale_size_continuous(limits = c(0.00001, 10), range = c(1,10),
-                        breaks = c(0.1, 1, 10)) + 
-  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "") + 
-  theme(legend.key=element_blank(), 
-        axis.text.x = element_text(colour = "black", size = 12, 
-                                   face = "bold", angle = 90, 
-                                   vjust = 0.3, hjust = 1),
-        axis.text.y = element_blank(), 
-        legend.text = element_text(size = 10, face ="bold", 
-                                   colour ="black"), 
-        legend.title = element_text(size = 12, face = "bold"), 
-        panel.background = element_blank(), 
-        panel.border = element_rect(colour = "black", fill = NA, 
-                                    size = 1.2), 
-        legend.position = "right", 
-        plot.margin = unit(c(5.5, 5.5, 5.5, -10), "pt")) +  
-  scale_fill_manual(values = colours, guide = FALSE) +
-  scale_y_discrete(limits = rev(levels(prop_info$Genera)))
-
-cDNA_plot
-```
-
-```{r}
-# make grid with new plots
-grid.arrange(gDNA_plot, cDNA_plot, nrow = 1)
-```
-
-Additional interesting way to break up the data, will definitely require cleaning up. Resource: <http://www.sthda.com/english/wiki/ggplot2-facet-split-a-plot-into-a-matrix-of-panels>
+ Resource: <http://www.sthda.com/english/wiki/ggplot2-facet-split-a-plot-into-a-matrix-of-panels>
 
 ```{r}
 # reordering the labels
@@ -589,6 +429,9 @@ legend2 <- get_legend(cDNA_plot)
 # make grid with new plots
 plot_grid(gDNA_plot, cDNA_plot + theme(legend.position = "none"), legend2, nrow = 1, ncol= 3,  rel_widths =  c(1, 0.6, 0.6))
 ```
+
+
+
 ## Heatmap of MOB relative abundance
 ```{r}
 # Assuming you have a data frame 'df' with the first column being the taxa
