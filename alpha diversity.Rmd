@@ -42,13 +42,16 @@ library(viridis)
 library(cowplot)
 library(patchwork)
 library(ggpubr)
+library(dplyr)
+library(hilldiv)
+library(FSA)
 ```
 
 Making a phyloseq object
 
 ```{r}
 # LOAD IN DATA
-bact_count_table <- read.table("data/June_Oct_MERGE_ASV_counts.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
+bact_count_table <- read.table("data/June_Oct_MERGE_ASV_counts - Copy.tsv", header = T, row.names = 1, check.names = F, sep = "\t") 
 bact_taxa_table <- as.matrix(read.table("data/June_Oct_MERGE_ASV_taxa_table.tsv", header = T, row.names = 1, check.names = F, sep = "\t"))
 bact_sample_info_table <- read.table("data/June_Oct_16S_MERGE_metadata - Copy.csv", header = T, row.names = 1, sep = ",") 
 
@@ -175,7 +178,7 @@ x <- ggplot(data = alphax, aes(x = monthsoil, y = Chao1)) +
   my_theme2 +
   guides(fill = guide_legend(override.aes = list(color = fill_col))) +
   labs(x="", y="", title="Chao1") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  theme(axis.text.x = element_blank())
 
 y <- ggplot(data = alphax, aes(x = monthsoil, y = Shannon)) +
   geom_jitter(aes(shape = template, fill = monthsoil),
@@ -186,7 +189,7 @@ y <- ggplot(data = alphax, aes(x = monthsoil, y = Shannon)) +
   my_theme2 +
   guides(fill = guide_legend(override.aes = list(color = fill_col))) +
   labs(x="", y="", title="Shannon diversity") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  theme(axis.text.x = element_blank())
 
 z <- ggplot(data = alphax, aes(x = monthsoil, y = PD)) +
   geom_jitter(aes(shape = template, fill = monthsoil),
@@ -827,3 +830,984 @@ permutest(betadisper(RBC.bray, bact_sample_info_table_gDNA$month))
 # PERMANOVA analysis
 adonis2(RBC.bray ~ month, data = bact_sample_info_table_gDNA, permutations = 999)
 ```
+
+
+
+RICHNESS & DIVERSITY ESTIMATES
+ use hilldiv package to estimate diversity with effective number of ASVs; order of diversity (q) specifies sensitivity towards abundant and rare ASVs 
+```{r}
+# First, raw bacterial richness (number of observed ASVs at each site); for each column, count number of rows where the column has a value greater than 0 (indicating that the ASV is present)
+
+# Function to count rows where value is greater than "0"
+count_rows_greater_than_zero <- function(df) {
+  result <- sapply(df, function(col) {
+    sum(col > 0)
+  })
+  return(result)
+}
+
+# Apply the function to the dataframe
+result <- count_rows_greater_than_zero(bact_count_table)
+
+# Print the result
+print(result)
+```
+ 
+```{r}
+# Hilldiv requires ASV table in which each column is a sample and each row is an ASV. Data can be raw counts or relative proportions.
+# q = 0; insensitive to ASV frequencies; weighs rare taxa the same as abundant taxa; raw richness (number of observed ASVs in each sample) 
+hill_div(bact_count_table, qvalue = 0)
+
+# q = 1; weighs ASVs by their frequency without disproportionately favoring either rare or abundant ones
+hill_div(bact_count_table, qvalue = 1)
+
+# q = 2; weighs ASVs by their frequency and overweighs abundant ASVs
+hill_div(bact_count_table, qvalue = 2)
+
+# create hierarchy tables that has species assigned to each sample
+sample_names_bact <- colnames(bact_count_table)
+month_names <- c(rep("June", 12), rep("Oct", 12))
+soil_names <- c(rep("June", 12), rep("Oct", 12))
+monthsoil_names <- c(rep("June rip", 6), rep("June up", 6), rep("Oct rip", 6), rep("Oct up", 6))
+monthsoiltemp_names <- c(rep("June rip cDNA", 3), rep("June rip gDNA", 3), rep("June up cDNA", 3), rep("June up gDNA", 3), 
+                         rep("Oct rip cDNA", 3), rep("Oct rip gDNA", 3), rep("Oct up cDNA", 3), rep("Oct up gDNA", 3))
+bact_hierarchy_table <- as.data.frame(cbind(sample_names_bact, monthsoiltemp_names))
+```
+ 
+```{r}
+# test whether diversity values differ by selected factor
+(divtest_bact_q0 <- div_test(bact_count_table, qvalue = 0, hierarchy = bact_hierarchy_table))
+
+(divtest_bact_q1 <- div_test(bact_count_table, qvalue = 1, hierarchy = bact_hierarchy_table))
+
+(divtest_bact_q2 <- div_test(bact_count_table, qvalue = 2, hierarchy = bact_hierarchy_table))
+
+(divtest_bact_q3 <- div_test(bact_count_table, qvalue = 3, hierarchy = bact_hierarchy_table))
+
+(divtest_bact_q4 <- div_test(bact_count_table, qvalue = 4, hierarchy = bact_hierarchy_table))
+
+```
+
+```{r}
+divtest_bact_q0_result <- as.data.frame(divtest_bact_q0)
+
+# Perform the Kruskal-Wallis test
+kruskal.test(data.Value ~ data.Group, data = divtest_bact_q0_result)
+
+dunnTest(data.Value ~ data.Group, data = divtest_bact_q0_result, method = "bonferroni" )
+```
+
+
+```{r}
+div_test_plot(divtest_bact_q0, chart = "box", threshold = 0.1) 
+div_test_plot(divtest_bact_q1, chart = "box", threshold = 0.1)
+div_test_plot(divtest_bact_q2, chart = "box", threshold = 0.1)
+div_test_plot(divtest_bact_q3, chart = "box", threshold = 0.1)
+div_test_plot(divtest_bact_q4, chart = "box", threshold = 0.1)
+```
+
+```{r}
+profiledata <- div_profile(bact_count_table, q = c(0,1,2,3, 4, 5), hierarchy = bact_hierarchy_table)
+div_profile_plot(profiledata)
+```
+ 
+ 
+```{r}
+# make a copy of Hill number table for plotting
+profiledata_df <- as.data.frame(profiledata)
+
+# add row that includes the Hill numbers
+profiledata_df$q <- rownames(profiledata_df)
+
+# pivot table for plotting
+profiledata_long <- pivot_longer(profiledata_df, !q, names_to = "Sample", values_to = "Effective_ASV") %>% data.frame()
+
+# generate plot
+ggplot(data=profiledata_long, aes(q, y=Effective_ASV, group = Sample)) +
+  geom_line(aes(color = Sample))+
+  geom_point(aes(color = Sample)) +
+  theme_classic() 
+
+# generate same plot with a log scale y axis to see differences at higher q numbers more clearly
+ggplot(data=profiledata_long, aes(q, y=Effective_ASV, group = Sample)) +
+  geom_line(aes(color = Sample))+
+  geom_point(aes(color = Sample)) +
+  theme_classic() + 
+  scale_y_log10()
+
+```
+```{r}
+# Perform the Kruskal-Wallis test
+kruskal.test(Effective_ASV ~ Sample, data = profiledata_long)
+```
+ 
+```{r}
+JRcDNA_q0 <- c(3844.000000,	9663.00000,	7584.00000)
+J <- c(4720  ,  4423   , 4702 , 5571  ,  6820  ,  1634 )
+
+
+# Perform Wilcoxon rank-sum test for q0
+wilcox_test_q0 <- wilcox.test(riparian_q0, upland_q0)
+print(wilcox_test_q0)
+
+bact_q1_values_cDNA
+riparian_q1 <- c( 132.5950 , 208.6328 , 171.9970 ,1296.4432, 1361.0830, 1436.6234)
+upland_q1 <- c(1033.6819 , 715.7767,  805.7840,  1706.6781, 1989.2368,  224.2964) 
+
+# Perform Wilcoxon rank-sum test for q1
+wilcox_test_q1 <- wilcox.test(riparian_q1, upland_q1)
+print(wilcox_test_q1)
+```
+ 
+ 
+ 
+ Hill diversity with gDNA and cDNA separated
+```{r}
+gDNA_subset <- bact_count_table[, !grepl("cDNA", colnames(bact_count_table))]
+
+sample_names_bact_gDNA <- colnames(gDNA_subset)
+month_names_gDNA <- c(rep("June", 6), rep("Oct", 6))
+
+bact_hierarchy_table_gDNA <- as.data.frame(cbind(sample_names_bact_gDNA, month_names_gDNA))
+
+# test whether gDNA library diversity values differ by month
+(divtest_bact_q0_gDNA <- div_test(gDNA_subset, qvalue = 0, hierarchy = bact_hierarchy_table_gDNA))
+(divtest_bact_q1_gDNA <- div_test(gDNA_subset, qvalue = 1, hierarchy = bact_hierarchy_table_gDNA))
+(divtest_bact_q2_gDNA <- div_test(gDNA_subset, qvalue = 2, hierarchy = bact_hierarchy_table_gDNA))
+(divtest_bact_q3_gDNA <- div_test(gDNA_subset, qvalue = 3, hierarchy = bact_hierarchy_table_gDNA))
+(divtest_bact_q4_gDNA <- div_test(gDNA_subset, qvalue = 4, hierarchy = bact_hierarchy_table_gDNA))
+```
+
+
+
+
+```{r}
+# prep data for plot below
+bact_q0_values <- hill_div(gDNA_subset, qvalue = 0)
+bact_q1_values <- hill_div(gDNA_subset, qvalue = 1)
+bact_q2_values <- hill_div(gDNA_subset, qvalue = 2)
+
+# Sample names (extracted from the names of the vectors)
+sample_names_gDNA <- names(bact_q0_values)
+
+# Create month  based on your sample names (adjust as needed)
+month_sampled <- ifelse(grepl("J", sample_names_gDNA), "June", "October")
+
+bact_q_table_gDNA <- data.frame(
+  sample = sample_names_gDNA,
+  month_sampled = month_sampled,
+  q0 = as.numeric(bact_q0_values),
+  q1 = as.numeric(bact_q1_values),
+  q2 = as.numeric(bact_q2_values),
+  stringsAsFactors = FALSE
+)
+
+
+# Calculate mean and standard deviation by month_sampled
+summary_stats <- bact_q_table_gDNA %>%
+  group_by(month_sampled) %>%
+  summarise(
+    q0_mean = mean(q0, na.rm = TRUE),
+    q0_sd = sd(q0, na.rm = TRUE),
+    q1_mean = mean(q1, na.rm = TRUE),
+    q1_sd = sd(q1, na.rm = TRUE),
+    q2_mean = mean(q2, na.rm = TRUE),
+    q2_sd = sd(q2, na.rm = TRUE)
+  )
+
+bact_mean_gDNA <- c(5042.167,844.8318, 63.19117,4517.667,1401.0059,499.51295)
+bact_sd_gDNA <- c(537.6376, 320.2558, 17.25581, 1846.8164, 288.6645, 65.21754)
+month1 <- c(rep("June", 3), rep("October", 3))
+diversity_order <- c("q0", "q1", "q2", "q0", "q1", "q2")
+bact_q_table_gDNA <- cbind(month1, diversity_order, bact_mean_gDNA, bact_sd_gDNA)
+bact_q_table_gDNA <- data.frame(bact_q_table_gDNA)
+
+
+bact_q_table_gDNA$bact_mean_gDNA <- as.numeric(bact_q_table_gDNA$bact_mean_gDNA)
+bact_q_table_gDNA$bact_sd_gDNA <- as.numeric(bact_q_table_gDNA$bact_sd_gDNA)
+
+bact_q_table_gDNA$se <- bact_q_table_gDNA$bact_sd_gDNA/sqrt(3)
+bact_q_table_gDNA$lower_ci <- bact_q_table_gDNA$bact_mean_gDNA - bact_q_table_gDNA$se
+bact_q_table_gDNA$upper_ci <- bact_q_table_gDNA$bact_mean_gDNA + bact_q_table_gDNA$se
+
+pd <- position_dodge(0.3)
+bact_q_table_gDNA$month1 <- factor(bact_q_table_gDNA$month1, levels = c("June", "October"))
+```
+Significant results from June vs October gDNA div_test:
+q1 = pval =  0.0102933 
+q2 = pval = 0.002164502 
+
+```{r}
+jvog <- (ggplot(bact_q_table_gDNA, aes(x = diversity_order, y = bact_mean_gDNA, group = month1)) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), color = "black", width = 0.15, position = pd) +
+    geom_point(aes(fill = month1), position = pd, size = 2, shape = 21, stroke = 1) +
+    scale_fill_manual(values = c("#b2182b", "#2166ac")) +
+    scale_y_continuous(limits = c(0, 6000)) +
+    xlab("Order of diversity (q)") +
+    ylab("Hill number") +
+    theme_classic(base_size = 10, base_family = "") +
+    theme(panel.border = element_rect(linetype = "solid", fill = NA, size = 0.15),
+          axis.title = element_text(face = "bold", color = "black", size = 10),
+          axis.text = element_text(face = "plain", color = "black", size = 10))) +
+  ggtitle("June vs October gDNA")
+
+jvog
+```
+
+  
+  Hill diversity with gDNA and cDNA separated
+```{r}
+cDNA_subset <- bact_count_table[, !grepl("gDNA", colnames(bact_count_table))]
+
+sample_names_bact_cDNA <- colnames(cDNA_subset)
+month_names_cDNA <- c(rep("June", 6), rep("Oct", 6))
+
+bact_hierarchy_table_cDNA <- as.data.frame(cbind(sample_names_bact_cDNA, month_names_cDNA))
+
+# test whether gDNA library diversity values differ by month
+(divtest_bact_q0_cDNA <- div_test(cDNA_subset, qvalue = 0, hierarchy = bact_hierarchy_table_cDNA))
+(divtest_bact_q1_cDNA <- div_test(cDNA_subset, qvalue = 1, hierarchy = bact_hierarchy_table_cDNA))
+(divtest_bact_q2_cDNA <- div_test(cDNA_subset, qvalue = 2, hierarchy = bact_hierarchy_table_cDNA))
+(divtest_bact_q3_cDNA <- div_test(cDNA_subset, qvalue = 3, hierarchy = bact_hierarchy_table_cDNA))
+(divtest_bact_q4_cDNA <- div_test(cDNA_subset, qvalue = 4, hierarchy = bact_hierarchy_table_cDNA))
+```
+
+
+
+```{r}
+# prep data for plot below
+bact_q0_values_cDNA <- hill_div(cDNA_subset, qvalue = 0)
+bact_q1_values_cDNA <- hill_div(cDNA_subset, qvalue = 1)
+bact_q2_values_cDNA <- hill_div(cDNA_subset, qvalue = 2)
+
+# Sample names (extracted from the names of the vectors)
+sample_names_cDNA <- names(bact_q0_values_cDNA)
+
+# Create month  based on your sample names (adjust as needed)
+month_sampled1 <- ifelse(grepl("J", sample_names_cDNA), "June", "October")
+
+bact_q_table_cDNA <- data.frame(
+  sample = sample_names_cDNA,
+  month_sampled1 = month_sampled1,
+  q0 = as.numeric(bact_q0_values_cDNA),
+  q1 = as.numeric(bact_q1_values_cDNA),
+  q2 = as.numeric(bact_q2_values_cDNA),
+  stringsAsFactors = FALSE
+)
+
+
+# Calculate mean and standard deviation by month_sampled
+summary_stats_c <- bact_q_table_cDNA %>%
+  group_by(month_sampled1) %>%
+  summarise(
+    q0_mean_c = mean(q0, na.rm = TRUE),
+    q0_sd_c = sd(q0, na.rm = TRUE),
+    q1_mean_c = mean(q1, na.rm = TRUE),
+    q1_sd_c = sd(q1, na.rm = TRUE),
+    q2_mean_c = mean(q2, na.rm = TRUE),
+    q2_sd_c = sd(q2, na.rm = TRUE)
+  )
+
+# fill these in by hand
+bact_mean_cDNA <- c(3255.0,511.4112,35.26425, 4027.5, 1335.7268,463.29222)
+bact_sd_cDNA <- c(1505.501,387.7024, 27.8192, 1861.033, 602.0505, 236.9581)
+month1 <- c(rep("June", 3), rep("October", 3))
+diversity_order <- c("q0", "q1", "q2", "q0", "q1", "q2")
+bact_q_table_cDNA <- cbind(month1, diversity_order, bact_mean_cDNA, bact_sd_cDNA)
+bact_q_table_cDNA <- data.frame(bact_q_table_cDNA)
+
+
+bact_q_table_cDNA$bact_mean_cDNA <- as.numeric(bact_q_table_cDNA$bact_mean_cDNA)
+bact_q_table_cDNA$bact_sd_cDNA <- as.numeric(bact_q_table_cDNA$bact_sd_cDNA)
+
+bact_q_table_cDNA$se <- bact_q_table_cDNA$bact_sd_cDNA/sqrt(3)
+bact_q_table_cDNA$lower_ci <- bact_q_table_cDNA$bact_mean_cDNA - bact_q_table_cDNA$se
+bact_q_table_cDNA$upper_ci <- bact_q_table_cDNA$bact_mean_cDNA + bact_q_table_cDNA$se
+
+pd <- position_dodge(0.3)
+bact_q_table_cDNA$month1 <- factor(bact_q_table_cDNA$month1, levels = c("June", "October"))
+```
+Significant results from June vs October cDNA div_test:
+q1 = pval =  0.02110314  
+q2 = pval = 0.01515152  
+
+```{r}
+jvoc <- (ggplot(bact_q_table_cDNA, aes(x = diversity_order, y = bact_mean_cDNA, group = month1)) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), color = "black", width = 0.15, position = pd) +
+    geom_point(aes(fill = month1), position = pd, size = 2, shape = 24, stroke = 1) +
+    scale_fill_manual(values = c("firebrick3", "cornflowerblue")) +
+   scale_y_continuous(limits = c(0, 6000)) +
+    xlab("Order of diversity (q)") +
+    ylab("Hill number") +
+    theme_classic(base_size = 10, base_family = "") +
+    theme(panel.border = element_rect(linetype = "solid", fill = NA, size = 0.15),
+          axis.title = element_text(face = "bold", color = "black", size = 10),
+          axis.text = element_text(face = "plain", color = "black", size = 10))) +
+  ggtitle("June vs October cDNA")
+
+jvoc
+```
+ 
+ In summary, no difference in q0 combined with differences in q1 and q2 implies that the month affects the relative abundances and dominance of ASVs within the community, leading to changes in diversity that are not reflected by simple ASV counts.
+ 
+ 
+ This finding means that while the overall species richness (ASV counts, 𝑞 0 q0) remains constant between different months, the evenness and dominance patterns (reflected by 𝑞 1 q1 and 𝑞 2 q2) are significantly affected by the month. This indicates that temporal factors influence the relative abundance of ASVs, resulting in changes in diversity that simple species counts do not capture.
+ 
+ The significant differences in 𝑞 1 q1 and 𝑞 2 q2 between months suggest that environmental conditions specific to each month impact the relative abundances of microbial taxa. This aligns with the observed variations in microbial community composition between June and October, despite the overall phylum-level similarities.
+ 
+ The finding that Proteobacteria and Betaproteobacteria were the most abundant taxa, but their relative abundances varied between months and types of sequencing (gDNA vs. cDNA), supports the idea that temporal changes affect the dominance of certain microbial groups. This dominance shift is captured by 𝑞 1 q1 and 𝑞 2 q2, which are sensitive to changes in evenness and the influence of dominant taxa.
+ 
+ The potential instability of rRNA due to suboptimal preservation methods could contribute to the observed differences in relative abundances and dominance patterns. This factor could partly explain why 𝑞 1 q1 and 𝑞 2 q2 show significant differences, indicating that the method of sample preservation and processing is crucial for accurate microbial diversity assessments. Microbial Sensitivity to Environmental Conditions: The manuscript notes that significant variations in diversity are likely due to a subset of microbes sensitive to temporal and spatial conditions. This aligns with the finding that the month significantly affects 𝑞 1 q1 and 𝑞 2 q2, suggesting that specific environmental factors (e.g., temperature, moisture, nutrient availability) in June and October selectively impact certain taxa, altering the community structure in terms of relative abundance and dominance.
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ Hill diversity with gDNA and cDNA separated: SOIL
+```{r}
+sample_names_bact_gDNA <- colnames(gDNA_subset)
+soil_names_gDNA <- c(rep("riparian", 3), rep("upland", 3), rep("riparian", 3), rep("upland", 3))
+
+bact_hierarchy_table_gDNA_s <- as.data.frame(cbind(sample_names_bact_gDNA, soil_names_gDNA))
+
+# test whether gDNA library diversity values differ by month
+(divtest_bact_q0_gDNA_s <- div_test(gDNA_subset, qvalue = 0, hierarchy = bact_hierarchy_table_gDNA_s))
+(divtest_bact_q1_gDNA_s <- div_test(gDNA_subset, qvalue = 1, hierarchy = bact_hierarchy_table_gDNA_s))
+(divtest_bact_q2_gDNA_s <- div_test(gDNA_subset, qvalue = 2, hierarchy = bact_hierarchy_table_gDNA_s))
+(divtest_bact_q3_gDNA_s <- div_test(gDNA_subset, qvalue = 3, hierarchy = bact_hierarchy_table_gDNA_s))
+(divtest_bact_q4_gDNA_s <- div_test(gDNA_subset, qvalue = 4, hierarchy = bact_hierarchy_table_gDNA_s))
+```
+not significantly different at q0-4 between riparian and upland gDNA soils
+
+
+```{r}
+# prep data for plot below
+bact_q0_values <- hill_div(gDNA_subset, qvalue = 0)
+bact_q1_values <- hill_div(gDNA_subset, qvalue = 1)
+bact_q2_values <- hill_div(gDNA_subset, qvalue = 2)
+
+# Sample names (extracted from the names of the vectors)
+sample_names_gDNA <- names(bact_q0_values)
+
+soil_sampled <- ifelse(grepl("R", sample_names_gDNA), "riparian", "upland")
+
+bact_q_table_gDNA <- data.frame(
+  sample = sample_names_gDNA,
+  soil_sampled = soil_sampled,
+  month_sampled = month_sampled,
+  q0 = as.numeric(bact_q0_values),
+  q1 = as.numeric(bact_q1_values),
+  q2 = as.numeric(bact_q2_values),
+  stringsAsFactors = FALSE
+)
+
+
+# Calculate mean and standard deviation by month_sampled
+summary_stats <- bact_q_table_gDNA %>%
+  group_by(soil_sampled) %>%
+  summarise(
+    q0_mean = mean(q0, na.rm = TRUE),
+    q0_sd = sd(q0, na.rm = TRUE),
+    q1_mean = mean(q1, na.rm = TRUE),
+    q1_sd = sd(q1, na.rm = TRUE),
+    q2_mean = mean(q2, na.rm = TRUE),
+    q2_sd = sd(q2, na.rm = TRUE)
+  )
+
+bact_mean_gDNA_s <- c(4172.500,1140.333, 283.0635,5387.333,1105.504,279.6406)
+bact_sd_gDNA_s <- c(1461.3198, 34.97249, 224.4070, 918.6389, 607.89628, 261.5561)
+soil <- c(rep("riparian", 3), rep("upland", 3), rep("riparian", 3), rep("upland", 3))
+diversity_order <- c("q0", "q1", "q2", "q0", "q1", "q2")
+bact_q_table_gDNA_s <- cbind(soil, diversity_order, bact_mean_gDNA_s, bact_sd_gDNA_s)
+bact_q_table_gDNA_s <- data.frame(bact_q_table_gDNA_s)
+
+
+bact_q_table_gDNA_s$bact_mean_gDNA_s <- as.numeric(bact_q_table_gDNA_s$bact_mean_gDNA_s)
+bact_q_table_gDNA_s$bact_sd_gDNA_s <- as.numeric(bact_q_table_gDNA_s$bact_sd_gDNA_s)
+
+bact_q_table_gDNA_s$se <- bact_q_table_gDNA_s$bact_sd_gDNA_s/sqrt(3)
+bact_q_table_gDNA_s$lower_ci <- bact_q_table_gDNA_s$bact_mean_gDNA_s - bact_q_table_gDNA_s$se
+bact_q_table_gDNA_s$upper_ci <- bact_q_table_gDNA_s$bact_mean_gDNA_s + bact_q_table_gDNA_s$se
+
+pd <- position_dodge(0.3)
+bact_q_table_gDNA_s$soil <- factor(bact_q_table_gDNA_s$soil, levels = c("riparian", "upland"))
+```
+
+
+```{r}
+ripvupg <- (ggplot(bact_q_table_gDNA_s, aes(x = diversity_order, y = bact_mean_gDNA_s, group = soil)) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), color = "black", width = 0.15, position = pd) +
+    geom_point(aes(fill = soil), position = pd, size = 2, shape = 21, stroke = 1) +
+    scale_fill_manual(values = c("darkgreen", "royalblue3")) +
+    scale_y_continuous(limits = c(0, 6000)) +
+    xlab("Order of diversity (q)") +
+    ylab("Hill number") +
+    theme_classic(base_size = 10, base_family = "") +
+    theme(panel.border = element_rect(linetype = "solid", fill = NA, size = 0.15),
+          axis.title = element_text(face = "bold", color = "black", size = 10),
+          axis.text = element_text(face = "plain", color = "black", size = 10))) +
+  ggtitle("riparian vs upland gDNA")
+
+ripvupg
+```
+
+Hill diversity with gDNA and cDNA separated: SOIL
+```{r}
+cDNA_subset <- bact_count_table[, !grepl("gDNA", colnames(bact_count_table))]
+
+sample_names_bact_cDNA <- colnames(cDNA_subset)
+soil_names_cDNA <- c(rep("riparian", 3), rep("upland", 3), rep("riparian", 3), rep("upland", 3))
+
+bact_hierarchy_table_cDNA_s <- as.data.frame(cbind(sample_names_bact_cDNA, soil_names_cDNA))
+
+# test whether gDNA library diversity values differ by month
+(divtest_bact_q0_cDNA_s <- div_test(cDNA_subset, qvalue = 0, hierarchy = bact_hierarchy_table_cDNA_s))
+(divtest_bact_q1_cDNA_s <- div_test(cDNA_subset, qvalue = 1, hierarchy = bact_hierarchy_table_cDNA_s))
+(divtest_bact_q2_cDNA_s <- div_test(cDNA_subset, qvalue = 2, hierarchy = bact_hierarchy_table_cDNA_s))
+(divtest_bact_q3_cDNA_s <- div_test(cDNA_subset, qvalue = 3, hierarchy = bact_hierarchy_table_cDNA_s))
+(divtest_bact_q4_cDNA_s <- div_test(cDNA_subset, qvalue = 4, hierarchy = bact_hierarchy_table_cDNA_s))
+```
+
+
+
+```{r}
+# prep data for plot below
+bact_q0_values_cDNA <- hill_div(cDNA_subset, qvalue = 0)
+bact_q1_values_cDNA <- hill_div(cDNA_subset, qvalue = 1)
+bact_q2_values_cDNA <- hill_div(cDNA_subset, qvalue = 2)
+
+# Sample names (extracted from the names of the vectors)
+sample_names_cDNA <- names(bact_q0_values_cDNA)
+
+# Create month  based on your sample names (adjust as needed)
+soil_sampled1 <- ifelse(grepl("R", sample_names_cDNA), "riparian", "upland")
+
+bact_q_table_cDNA <- data.frame(
+  sample = sample_names_cDNA,
+  month_sampled1 = month_sampled1,
+  soil_sampled1 = soil_sampled1,
+  q0 = as.numeric(bact_q0_values_cDNA),
+  q1 = as.numeric(bact_q1_values_cDNA),
+  q2 = as.numeric(bact_q2_values_cDNA),
+  stringsAsFactors = FALSE
+)
+
+
+# Calculate mean and standard deviation by month_sampled
+summary_stats_c <- bact_q_table_cDNA %>%
+  group_by(soil_sampled1) %>%
+  summarise(
+    q0_mean_c = mean(q0, na.rm = TRUE),
+    q0_sd_c = sd(q0, na.rm = TRUE),
+    q1_mean_c = mean(q1, na.rm = TRUE),
+    q1_sd_c = sd(q1, na.rm = TRUE),
+    q2_mean_c = mean(q2, na.rm = TRUE),
+    q2_sd_c = sd(q2, na.rm = TRUE)
+  )
+
+# fill these in by hand
+bact_mean_cDNA_s <- c(2637.5,767.8957,246.9238, 4645.0, 1079.2423,251.6327)
+bact_sd_cDNA_s <- c(852.948,655.7298, 253.7577, 1715.365	, 657.5197, 320.0649)
+soil1 <- c(rep("riparian", 3), rep("upland", 3), rep("riparian", 3), rep("upland", 3))
+diversity_order <- c("q0", "q1", "q2", "q0", "q1", "q2")
+bact_q_table_cDNA_s <- cbind(soil1, diversity_order, bact_mean_cDNA_s, bact_sd_cDNA_s)
+bact_q_table_cDNA_s <- data.frame(bact_q_table_cDNA_s)
+
+
+bact_q_table_cDNA_s$bact_mean_cDNA_s <- as.numeric(bact_q_table_cDNA_s$bact_mean_cDNA_s)
+bact_q_table_cDNA_s$bact_sd_cDNA_s <- as.numeric(bact_q_table_cDNA_s$bact_sd_cDNA_s)
+
+bact_q_table_cDNA_s$se <- bact_q_table_cDNA_s$bact_sd_cDNA_s/sqrt(3)
+bact_q_table_cDNA_s$lower_ci <- bact_q_table_cDNA_s$bact_mean_cDNA_s - bact_q_table_cDNA_s$se
+bact_q_table_cDNA_s$upper_ci <- bact_q_table_cDNA_s$bact_mean_cDNA_s + bact_q_table_cDNA_s$se
+
+pd <- position_dodge(0.3)
+bact_q_table_cDNA_s$soil1 <- factor(bact_q_table_cDNA_s$soil1, levels = c("riparian", "upland"))
+```
+
+```{r}
+ripvupc <- (ggplot(bact_q_table_cDNA_s, aes(x = diversity_order, y = bact_mean_cDNA_s, group = soil1)) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), color = "black", width = 0.15, position = pd) +
+    geom_point(aes(fill = soil1), position = pd, size = 2, shape = 24, stroke = 1) +
+    scale_fill_manual(values = c("darkgreen", "royalblue3")) +
+   scale_y_continuous(limits = c(0, 6000)) +
+    xlab("Order of diversity (q)") +
+    ylab("Hill number") +
+    theme_classic(base_size = 10, base_family = "") +
+    theme(panel.border = element_rect(linetype = "solid", fill = NA, size = 0.15),
+          axis.title = element_text(face = "bold", color = "black", size = 10),
+          axis.text = element_text(face = "plain", color = "black", size = 10))) +
+  ggtitle("riparian vs upland cDNA")
+
+ripvupc
+```
+
+```{r}
+bact_q0_values_cDNA
+
+riparian_q0 <- c(1841    , 2218    , 1626    ,  3105 ,   3382  ,  3653)
+upland_q0 <- c(4720  ,  4423   , 4702 , 5571  ,  6820  ,  1634 )
+
+
+# Perform Wilcoxon rank-sum test for q0
+wilcox_test_q0 <- wilcox.test(riparian_q0, upland_q0)
+print(wilcox_test_q0)
+
+bact_q1_values_cDNA
+riparian_q1 <- c( 132.5950 , 208.6328 , 171.9970 ,1296.4432, 1361.0830, 1436.6234)
+upland_q1 <- c(1033.6819 , 715.7767,  805.7840,  1706.6781, 1989.2368,  224.2964) 
+
+# Perform Wilcoxon rank-sum test for q1
+wilcox_test_q1 <- wilcox.test(riparian_q1, upland_q1)
+print(wilcox_test_q1)
+```
+
+
+```{r}
+plot_grid(jvog, jvoc, ripvupg, ripvupc, nrow = 2, ncol = 2)
+```
+Hill diversity with June and October separated: TEMPLATE
+```{r}
+June_subset <- bact_count_table[, !grepl("O", colnames(bact_count_table))]
+
+sample_names_bact_J <- colnames(June_subset)
+temp_names_J <- c(rep("cDNA", 3), rep("gDNA", 3), rep("cDNA", 3), rep("gDNA", 3))
+
+bact_hierarchy_table_J_temp <- as.data.frame(cbind(sample_names_bact_J, temp_names_J))
+
+# test whether June library diversity values differ by template
+(divtest_bact_q0_J_temp <- div_test(June_subset, qvalue = 0, hierarchy = bact_hierarchy_table_J_temp))
+(divtest_bact_q1_J_temp <- div_test(June_subset, qvalue = 1, hierarchy = bact_hierarchy_table_J_temp))
+(divtest_bact_q2_J_temp <- div_test(June_subset, qvalue = 2, hierarchy = bact_hierarchy_table_J_temp))
+(divtest_bact_q3_J_temp <- div_test(June_subset, qvalue = 3, hierarchy = bact_hierarchy_table_J_temp))
+(divtest_bact_q4_J_temp <- div_test(June_subset, qvalue = 4, hierarchy = bact_hierarchy_table_J_temp))
+
+profiledata_J_temp <- div_profile(June_subset, q = c(0,1,2,3, 4, 5), hierarchy = bact_hierarchy_table_J_temp)
+div_profile_plot(profiledata_J_temp)
+```
+
+
+
+```{r}
+# prep data for plot below
+bact_q0_values_June <- hill_div(June_subset, qvalue = 0)
+bact_q1_values_June <- hill_div(June_subset, qvalue = 1)
+bact_q2_values_June <- hill_div(June_subset, qvalue = 2)
+
+# Sample names (extracted from the names of the vectors)
+sample_names_J <- names(bact_q0_values_June)
+
+# Create month  based on your sample names (adjust as needed)
+temp_sampled <- ifelse(grepl("c", sample_names_J), "cDNA", "gDNA")
+
+bact_q_table_J_temp <- data.frame(
+  sample = sample_names_J,
+  temp_sampled = temp_sampled,
+  q0 = as.numeric(bact_q0_values_June),
+  q1 = as.numeric(bact_q1_values_June),
+  q2 = as.numeric(bact_q2_values_June),
+  stringsAsFactors = FALSE
+)
+
+# calculate summary stats
+summary_stats_J_temp <- bact_q_table_J_temp %>%
+  group_by(temp_sampled) %>%
+  summarise(
+    q0_mean = mean(q0, na.rm = TRUE),
+    q0_sd = sd(q0, na.rm = TRUE),
+    q0_se = q0_sd / sqrt(n()),
+    q0_lower_ci = q0_mean - q0_se,
+    q0_upper_ci = q0_mean + q0_se,
+    q1_mean = mean(q1, na.rm = TRUE),
+    q1_sd = sd(q1, na.rm = TRUE),
+    q1_se = q1_sd / sqrt(n()),
+    q1_lower_ci = q1_mean - q1_se,
+    q1_upper_ci = q1_mean + q1_se,
+    q2_mean = mean(q2, na.rm = TRUE),
+    q2_sd = sd(q2, na.rm = TRUE),
+    q2_se = q2_sd / sqrt(n()),
+    q2_lower_ci = q2_mean - q2_se,
+    q2_upper_ci = q2_mean + q2_se
+  )
+
+# Reshape the summary statistics into long format
+summary_stats_long <- summary_stats_J_temp %>%
+  pivot_longer(
+    cols = -temp_sampled,
+    names_to = c("diversity_order", "metric"),
+    names_sep = "_",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = value
+  )
+
+# Clean up the dataframe for final output
+bact_q_table_J_temp <- summary_stats_long %>%
+  rename(
+    temp = temp_sampled,
+    mean = mean,
+    sd = sd,
+    se = se,
+    lower_ci = lower,
+    upper_ci = upper
+  ) %>%
+  select(temp, diversity_order, mean, sd, se, lower_ci, upper_ci) %>%
+  mutate(temp = factor(temp, levels = c("gDNA", "cDNA"))) %>%
+  arrange(temp)
+
+
+```
+
+
+```{r}
+cvgJ <- (ggplot(bact_q_table_J_temp, aes(x = diversity_order, y = mean, group = temp)) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), color = "black", width = 0.15, position = pd) +
+    geom_point(aes(shape = temp), position = pd, size = 2, stroke = 1, fill = "firebrick") +
+    scale_shape_manual(values = c(21, 24)) +
+   scale_y_continuous(limits = c(0, 6000)) +
+    xlab("Order of diversity (q)") +
+    ylab("Hill number") +
+    theme_classic(base_size = 10, base_family = "") +
+    theme(panel.border = element_rect(linetype = "solid", fill = NA, size = 0.15),
+          axis.title = element_text(face = "bold", color = "black", size = 10),
+          axis.text = element_text(face = "plain", color = "black", size = 10))) +
+  ggtitle("cDNA vs gDNA June")
+
+cvgJ
+```
+Hill diversity with June and October separated: TEMPLATE
+```{r}
+Oct_subset <- bact_count_table[, !grepl("J", colnames(bact_count_table))]
+
+sample_names_bact_O <- colnames(Oct_subset)
+temp_names_O <- c(rep("cDNA", 3), rep("gDNA", 3), rep("cDNA", 3), rep("gDNA", 3))
+
+bact_hierarchy_table_O_temp <- as.data.frame(cbind(sample_names_bact_O, temp_names_O))
+
+# test whether June library diversity values differ by template
+(divtest_bact_q0_O_temp <- div_test(Oct_subset, qvalue = 0, hierarchy = bact_hierarchy_table_O_temp))
+(divtest_bact_q1_O_temp <- div_test(Oct_subset, qvalue = 1, hierarchy = bact_hierarchy_table_O_temp))
+(divtest_bact_q2_O_temp <- div_test(Oct_subset, qvalue = 2, hierarchy = bact_hierarchy_table_O_temp))
+(divtest_bact_q3_O_temp <- div_test(Oct_subset, qvalue = 3, hierarchy = bact_hierarchy_table_O_temp))
+(divtest_bact_q4_O_temp <- div_test(Oct_subset, qvalue = 4, hierarchy = bact_hierarchy_table_O_temp))
+
+profiledata_O_temp <- div_profile(Oct_subset, q = c(0,1,2,3, 4, 5), hierarchy = bact_hierarchy_table_O_temp)
+div_profile_plot(profiledata_O_temp)
+```
+
+
+
+```{r}
+# prep data for plot below
+bact_q0_values_Oct <- hill_div(Oct_subset, qvalue = 0)
+bact_q1_values_Oct <- hill_div(Oct_subset, qvalue = 1)
+bact_q2_values_Oct <- hill_div(Oct_subset, qvalue = 2)
+
+# Sample names (extracted from the names of the vectors)
+sample_names_O <- names(bact_q0_values_Oct)
+
+# Create month  based on your sample names (adjust as needed)
+temp_sampled <- ifelse(grepl("c", sample_names_J), "cDNA", "gDNA")
+
+bact_q_table_O_temp <- data.frame(
+  sample = sample_names_O,
+  temp_sampled = temp_sampled,
+  q0 = as.numeric(bact_q0_values_Oct),
+  q1 = as.numeric(bact_q1_values_Oct),
+  q2 = as.numeric(bact_q2_values_Oct),
+  stringsAsFactors = FALSE
+)
+
+# calculate summary stats
+summary_stats_O_temp <- bact_q_table_O_temp %>%
+  group_by(temp_sampled) %>%
+  summarise(
+    q0_mean = mean(q0, na.rm = TRUE),
+    q0_sd = sd(q0, na.rm = TRUE),
+    q0_se = q0_sd / sqrt(n()),
+    q0_lower_ci = q0_mean - q0_se,
+    q0_upper_ci = q0_mean + q0_se,
+    q1_mean = mean(q1, na.rm = TRUE),
+    q1_sd = sd(q1, na.rm = TRUE),
+    q1_se = q1_sd / sqrt(n()),
+    q1_lower_ci = q1_mean - q1_se,
+    q1_upper_ci = q1_mean + q1_se,
+    q2_mean = mean(q2, na.rm = TRUE),
+    q2_sd = sd(q2, na.rm = TRUE),
+    q2_se = q2_sd / sqrt(n()),
+    q2_lower_ci = q2_mean - q2_se,
+    q2_upper_ci = q2_mean + q2_se
+  )
+
+# Reshape the summary statistics into long format
+summary_stats_long_O <- summary_stats_O_temp %>%
+  pivot_longer(
+    cols = -temp_sampled,
+    names_to = c("diversity_order", "metric"),
+    names_sep = "_",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = value
+  )
+
+# Clean up the dataframe for final output
+bact_q_table_O_temp <- summary_stats_long_O %>%
+  rename(
+    temp = temp_sampled,
+    mean = mean,
+    sd = sd,
+    se = se,
+    lower_ci = lower,
+    upper_ci = upper
+  ) %>%
+  select(temp, diversity_order, mean, sd, se, lower_ci, upper_ci) %>%
+  mutate(temp = factor(temp, levels = c("gDNA", "cDNA"))) %>%
+  arrange(temp)
+
+
+
+```
+
+
+```{r}
+
+cvgO <- (ggplot(bact_q_table_O_temp, aes(x = diversity_order, y = mean, group = temp)) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), color = "black", width = 0.15, position = pd) +
+    geom_point(aes(shape = temp), position = pd, size = 2, stroke = 1, fill = "royalblue3") +
+    scale_shape_manual(values = c(21, 24)) +
+   scale_y_continuous(limits = c(0, 6000)) +
+    xlab("Order of diversity (q)") +
+    ylab("Hill number") +
+    theme_classic(base_size = 10, base_family = "") +
+    theme(panel.border = element_rect(linetype = "solid", fill = NA, size = 0.15),
+          axis.title = element_text(face = "bold", color = "black", size = 10),
+          axis.text = element_text(face = "plain", color = "black", size = 10))) +
+  ggtitle("cDNA vs gDNA October")
+
+cvgO
+```
+
+
+```{r}
+rip_subset <- bact_count_table[, !grepl("U", colnames(bact_count_table))]
+
+sample_names_bact_rip <- colnames(rip_subset)
+temp_names_rip <- c(rep("cDNA", 3), rep("gDNA", 3), rep("cDNA", 3), rep("gDNA", 3))
+
+bact_hierarchy_table_rip_temp <- as.data.frame(cbind(sample_names_bact_rip, temp_names_O))
+
+# test whether June library diversity values differ by template
+(divtest_bact_q0_rip_temp <- div_test(rip_subset, qvalue = 0, hierarchy = bact_hierarchy_table_rip_temp))
+(divtest_bact_q1_rip_temp <- div_test(rip_subset, qvalue = 1, hierarchy = bact_hierarchy_table_rip_temp))
+(divtest_bact_q2_rip_temp <- div_test(rip_subset, qvalue = 2, hierarchy = bact_hierarchy_table_rip_temp))
+(divtest_bact_q3_rip_temp <- div_test(rip_subset, qvalue = 3, hierarchy = bact_hierarchy_table_rip_temp))
+(divtest_bact_q4_rip_temp <- div_test(rip_subset, qvalue = 4, hierarchy = bact_hierarchy_table_rip_temp))
+
+profiledata_rip_temp <- div_profile(rip_subset, q = c(0,1,2,3, 4, 5), hierarchy = bact_hierarchy_table_rip_temp)
+div_profile_plot(profiledata_rip_temp)
+```
+```{r}
+# prep data for plot below
+bact_q0_values_rip <- hill_div(rip_subset, qvalue = 0)
+bact_q1_values_rip <- hill_div(rip_subset, qvalue = 1)
+bact_q2_values_rip <- hill_div(rip_subset, qvalue = 2)
+
+# Sample names (extracted from the names of the vectors)
+sample_names_rip <- names(bact_q0_values_rip)
+
+# Create month  based on your sample names (adjust as needed)
+temp_sampled <- ifelse(grepl("c", sample_names_J), "cDNA", "gDNA")
+
+bact_q_table_rip_temp <- data.frame(
+  sample = sample_names_rip,
+  temp_sampled = temp_sampled,
+  q0 = as.numeric(bact_q0_values_rip),
+  q1 = as.numeric(bact_q1_values_rip),
+  q2 = as.numeric(bact_q2_values_rip),
+  stringsAsFactors = FALSE
+)
+
+# calculate summary stats
+summary_stats_rip_temp <- bact_q_table_rip_temp %>%
+  group_by(temp_sampled) %>%
+  summarise(
+    q0_mean = mean(q0, na.rm = TRUE),
+    q0_sd = sd(q0, na.rm = TRUE),
+    q0_se = q0_sd / sqrt(n()),
+    q0_lower_ci = q0_mean - q0_se,
+    q0_upper_ci = q0_mean + q0_se,
+    q1_mean = mean(q1, na.rm = TRUE),
+    q1_sd = sd(q1, na.rm = TRUE),
+    q1_se = q1_sd / sqrt(n()),
+    q1_lower_ci = q1_mean - q1_se,
+    q1_upper_ci = q1_mean + q1_se,
+    q2_mean = mean(q2, na.rm = TRUE),
+    q2_sd = sd(q2, na.rm = TRUE),
+    q2_se = q2_sd / sqrt(n()),
+    q2_lower_ci = q2_mean - q2_se,
+    q2_upper_ci = q2_mean + q2_se
+  )
+
+# Reshape the summary statistics into long format
+summary_stats_long_rip <- summary_stats_rip_temp %>%
+  pivot_longer(
+    cols = -temp_sampled,
+    names_to = c("diversity_order", "metric"),
+    names_sep = "_",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = value
+  )
+
+# Clean up the dataframe for final output
+bact_q_table_rip_temp <- summary_stats_long_rip %>%
+  rename(
+    temp = temp_sampled,
+    mean = mean,
+    sd = sd,
+    se = se,
+    lower_ci = lower,
+    upper_ci = upper
+  ) %>%
+  select(temp, diversity_order, mean, sd, se, lower_ci, upper_ci) %>%
+  mutate(temp = factor(temp, levels = c("gDNA", "cDNA"))) %>%
+  arrange(temp)
+
+
+```
+
+```{r}
+
+cvgr <- (ggplot(bact_q_table_rip_temp, aes(x = diversity_order, y = mean, group = temp)) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), color = "black", width = 0.15, position = pd) +
+    geom_point(aes(shape = temp), position = pd, size = 2, stroke = 1, fill = "royalblue3") +
+    scale_shape_manual(values = c(21, 24)) +
+   scale_y_continuous(limits = c(0, 6000)) +
+    xlab("Order of diversity (q)") +
+    ylab("Hill number") +
+    theme_classic(base_size = 10, base_family = "") +
+    theme(panel.border = element_rect(linetype = "solid", fill = NA, size = 0.15),
+          axis.title = element_text(face = "bold", color = "black", size = 10),
+          axis.text = element_text(face = "plain", color = "black", size = 10))) +
+  ggtitle("cDNA vs gDNA Riparian")
+
+cvgr
+```
+
+
+```{r}
+up_subset <- bact_count_table[, !grepl("R", colnames(bact_count_table))]
+
+sample_names_bact_up <- colnames(up_subset)
+temp_names_up <- c(rep("cDNA", 3), rep("gDNA", 3), rep("cDNA", 3), rep("gDNA", 3))
+
+bact_hierarchy_table_up_temp <- as.data.frame(cbind(sample_names_bact_up, temp_names_up))
+
+# test whether June library diversity values differ by template
+(divtest_bact_q0_up_temp <- div_test(up_subset, qvalue = 0, hierarchy = bact_hierarchy_table_up_temp))
+(divtest_bact_q1_up_temp <- div_test(up_subset, qvalue = 1, hierarchy = bact_hierarchy_table_up_temp))
+(divtest_bact_q2_up_temp <- div_test(up_subset, qvalue = 2, hierarchy = bact_hierarchy_table_up_temp))
+(divtest_bact_q3_up_temp <- div_test(up_subset, qvalue = 3, hierarchy = bact_hierarchy_table_up_temp))
+(divtest_bact_q4_up_temp <- div_test(up_subset, qvalue = 4, hierarchy = bact_hierarchy_table_up_temp))
+
+profiledata_up_temp <- div_profile(up_subset, q = c(0,1,2,3, 4, 5), hierarchy = bact_hierarchy_table_up_temp)
+div_profile_plot(profiledata_up_temp)
+```
+```{r}
+# prep data for plot below
+bact_q0_values_up <- hill_div(up_subset, qvalue = 0)
+bact_q1_values_up <- hill_div(up_subset, qvalue = 1)
+bact_q2_values_up <- hill_div(up_subset, qvalue = 2)
+
+# Sample names (extracted from the names of the vectors)
+sample_names_up <- names(bact_q0_values_up)
+
+# Create month  based on your sample names (adjust as needed)
+temp_sampled <- ifelse(grepl("c", sample_names_J), "cDNA", "gDNA")
+
+bact_q_table_up_temp <- data.frame(
+  sample = sample_names_up,
+  temp_sampled = temp_sampled,
+  q0 = as.numeric(bact_q0_values_up),
+  q1 = as.numeric(bact_q1_values_up),
+  q2 = as.numeric(bact_q2_values_up),
+  stringsAsFactors = FALSE
+)
+
+# calculate summary stats
+summary_stats_up_temp <- bact_q_table_up_temp %>%
+  group_by(temp_sampled) %>%
+  summarise(
+    q0_mean = mean(q0, na.rm = TRUE),
+    q0_sd = sd(q0, na.rm = TRUE),
+    q0_se = q0_sd / sqrt(n()),
+    q0_lower_ci = q0_mean - q0_se,
+    q0_upper_ci = q0_mean + q0_se,
+    q1_mean = mean(q1, na.rm = TRUE),
+    q1_sd = sd(q1, na.rm = TRUE),
+    q1_se = q1_sd / sqrt(n()),
+    q1_lower_ci = q1_mean - q1_se,
+    q1_upper_ci = q1_mean + q1_se,
+    q2_mean = mean(q2, na.rm = TRUE),
+    q2_sd = sd(q2, na.rm = TRUE),
+    q2_se = q2_sd / sqrt(n()),
+    q2_lower_ci = q2_mean - q2_se,
+    q2_upper_ci = q2_mean + q2_se
+  )
+
+# Reshape the summary statistics into long format
+summary_stats_long_up <- summary_stats_up_temp %>%
+  pivot_longer(
+    cols = -temp_sampled,
+    names_to = c("diversity_order", "metric"),
+    names_sep = "_",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = value
+  )
+
+# Clean up the dataframe for final output
+bact_q_table_up_temp <- summary_stats_long_up %>%
+  rename(
+    temp = temp_sampled,
+    mean = mean,
+    sd = sd,
+    se = se,
+    lower_ci = lower,
+    upper_ci = upper
+  ) %>%
+  select(temp, diversity_order, mean, sd, se, lower_ci, upper_ci) %>%
+  mutate(temp = factor(temp, levels = c("gDNA", "cDNA"))) %>%
+  arrange(temp)
+```
+```{r}
+cvgu <- (ggplot(bact_q_table_up_temp, aes(x = diversity_order, y = mean, group = temp)) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), color = "black", width = 0.15, position = pd) +
+    geom_point(aes(shape = temp), position = pd, size = 2, stroke = 1, fill = "royalblue3") +
+    scale_shape_manual(values = c(21, 24)) +
+   scale_y_continuous(limits = c(0, 6000)) +
+    xlab("Order of diversity (q)") +
+    ylab("Hill number") +
+    theme_classic(base_size = 10, base_family = "") +
+    theme(panel.border = element_rect(linetype = "solid", fill = NA, size = 0.15),
+          axis.title = element_text(face = "bold", color = "black", size = 10),
+          axis.text = element_text(face = "plain", color = "black", size = 10))) +
+  ggtitle("cDNA vs gDNA Upland")
+
+cvgu
+```
+
+```{r}
+plot_grid(cvgJ, cvgO, cvgr, cvgu, nrow = 2, ncol = 2)
+```
+
