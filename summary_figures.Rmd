@@ -38,6 +38,7 @@ library(dendextend)
 library(viridis) 
 library(ggplot2)
 library(gridExtra)
+library(cowplot)
 
 # double check what packages are installed & loaded
 (.packages())
@@ -96,6 +97,9 @@ write.csv(major_king_proportions_tab_t, "king_prop.csv", sep = "\t", quote = F, 
 Looking at the table we created, it seems that the Bacteria kingdom is where most of the ASVs we found in all of our samples is coming from, followed by the Unclassified category.
 
 This is still too broad of information and can be hard to identify trends just based on kingdom-level taxonomic classification. Therefore, I don't think it's worth it to calculate relative abundances just yet. We can subset our counts further based on lower taxonomic groups, including looking specifically at the phyla that are within the bacteria kingdom, for example.
+
+
+
 
 ### Phyla in Bacteria subset
 
@@ -427,7 +431,7 @@ grid.arrange(ab, ba, ncol = 1)
 legend3 <- get_legend(ab)
 taxa_combo <- plot_grid(ab + theme(legend.position = "none"), 
           ba + theme(legend.position = "none"),
-          nrow=2)
+          nrow=2,  rel_heights = c(1, 0.8))
 
 
 plot_grid(taxa_combo, legend3, 
@@ -747,6 +751,308 @@ ggplot(methy_tax_info, aes(Genus, Proportion)) +
         legend.title=element_blank()) +    
   labs(x="Methylococcaceae genera", 
        y="% of 16S rRNA gene copies recovered", title="All samples")
+```
+
+### Phyla in Archaea subset
+```{r}
+# making a vector of just the Archaea phyla
+arch_phyla_vec <- as.vector(phy_tax_tab[phy_tax_tab$Kingdom == "Archaea", "Phylum"])
+
+# making a table of the counts of the Archaeal phyla
+arch_phyla_counts_tab <- phyla_counts_tab[row.names(phyla_counts_tab) %in% arch_phyla_vec, ] 
+```
+
+```{r}
+arch_no_phy_counts <- king_and_unidentified_counts_tab[row.names(king_and_unidentified_counts_tab) %in% "Archaea", ] - colSums(arch_phyla_counts_tab) # These values will be added to our counts table as "Unresolved Archaea"
+
+# since the counts assigned "Archaea" are all accounted for (as they are all further subsetted within the phylum table, including the unidentified Archaea), let's make a table of our kingdom counts for everything other than Archaea
+non_arch <- king_and_unidentified_counts_tab[-2,]
+
+# now combining the tables:
+phyla_taxa_counts_tab_arch <- rbind(non_arch, arch_phyla_counts_tab, 
+                                    "Unresolved_Archaea"= arch_no_phy_counts)
+```
+
+To check we didn't miss any other sequences, we can compare the column sums of our new tables to the column sums of the original raw count table to see if they are the same. If "TRUE", we know nothing fell through the cracks and we can confidently calculate relative abundance.
+
+```{r}
+# Starting with just the kingdom classification table
+identical(colSums(bact_count_table), colSums(king_and_unidentified_counts_tab)) # TRUE
+
+# This is our combined table of non-archaea kingdoms and the archaea kingdom broken into different phyla (including Archaea that didn't have a phylum assignment)
+identical(colSums(bact_count_table), colSums(phyla_taxa_counts_tab_arch)) # TRUE
+
+# calculate relative abundance in PERCENT
+major_phyla_proportions_tab_arch <- apply(phyla_taxa_counts_tab_arch, 2, function(x) x/sum(x)*100)
+```
+
+We have calculated the relative abundance of our table that has the phyla within the Bacteria kingdom as well as categories for any ASVs that are not assigned phyla within the Bacteria kingdom. We can use this table to generate some summary figures. If we check the dimensions of this table at this point,
+
+```{r}
+dim(major_phyla_proportions_tab_arch) 
+```
+
+```{r}
+temp_filt_major_phyla_proportions_tab <- as.data.frame(major_phyla_proportions_tab[apply(major_phyla_proportions_tab, 1, max) > 1, ])
+# how many are above 1%
+dim(temp_filt_major_phyla_proportions_tab) 
+# now we have 15, much more manageable for an overview figure
+
+# though each of the filtered taxa made up less than 1% alone, together they may add up and should still be included in the overall summary so we're going to add a row called "Other" that keeps track of how much we filtered out (which will also keep our totals at 100%)
+filtered_phyla <- colSums(major_phyla_proportions_tab) - colSums(temp_filt_major_phyla_proportions_tab)
+
+filt_major_phyla_proportions_tab <- rbind(temp_filt_major_phyla_proportions_tab, "Other (low %)"=filtered_phyla)
+```
+
+Now that we have a nice proportions table ready to go, we can make some figures with it. First we need to get the information ready for plotting.
+
+```{r}
+# first let's make a copy of our table that's safe for manipulating
+phyla_tax_arch <- as.data.frame(major_phyla_proportions_tab_arch)
+
+# and add a column of the taxa names so that it is within the table, rather than just as row names (this makes working with ggplot easier)
+phyla_tax_arch$Major_Taxa <- row.names(phyla_tax_arch)
+
+# now we'll transform the table into narrow, or long, format (also makes plotting easier)
+phyla_tax_long_arch <- pivot_longer(phyla_tax_arch, !Major_Taxa, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+
+# now we want a table metadata of each sample to merge into our plotting table so we can use that more easily in our plotting function. Here we're making a new table by pulling what we want from the sample information table
+sample_info_for_merge_arch<-data.frame("Sample"=row.names(bact_sample_info_table), "month"=bact_sample_info_table$month, "soil"=bact_sample_info_table$soil, "template"=bact_sample_info_table$template, "replicate"=bact_sample_info_table$replicate, "monthsoil"=bact_sample_info_table$monthsoil, stringsAsFactors=F)
+
+# and here we are merging this table with the plotting table we just made
+phyla_tax_info_arch <- merge(phyla_tax_long_arch, sample_info_for_merge)
+
+# since there is so much bacteria, let's remove it from the table so it doesn't crowd out the figures
+phyla_tax_arch_no_bact <- phyla_tax_arch[-1,]
+phyla_tax_arch_no_bact$Major_Taxa <- row.names(phyla_tax_arch_no_bact)
+phyla_tax_long_arch_no_bact <- pivot_longer(phyla_tax_arch_no_bact, !Major_Taxa, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+phyla_tax_info_arch_no_bact <- merge(phyla_tax_long_arch_no_bact, sample_info_for_merge)
+```
+
+#### Figures
+
+One common way to look at this is with stacked bar charts for each taxon per sample:
+
+```{r}
+ggplot(phyla_tax_info_arch_no_bact, aes(x=Sample, y=Proportion, fill=Major_Taxa)) +
+  geom_bar(width=0.6, stat="identity", color = "black") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90, vjust=0.4, hjust=1), legend.title=element_blank()) +
+  labs(x="Sample", y="% of 16S rRNA gene copies recovered", title="All samples")
+
+# removing Eukaryota from the plot
+phyla_tax_info_arch_no_bact_euk <- phyla_tax_info_arch_no_bact %>%
+  filter(Major_Taxa != "Eukaryota")
+
+ggplot(phyla_tax_info_arch_no_bact_euk, aes(x=Sample, y=Proportion, fill=Major_Taxa)) +
+  geom_bar(width=0.6, stat="identity", color = "white") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90, vjust=0.4, hjust=1), legend.title=element_blank()) +
+  labs(x="Sample", y="% of 16S rRNA gene copies recovered", title="All samples") +
+   scale_fill_manual(values = colors)
+
+# Set specific colors
+colors["Crenarchaeota"] <-"#af4b91"
+colors["Diapherotrites"] <-"#541352ff"
+colors["Pacearchaeota"] <-"#FFC100"
+colors["Thaumarchaeota"] <-"#00a0e1"
+colors["Euryarchaeota"] <-"red"
+
+# reorder taxa
+taxaLevels_arch <- c(sort(setdiff(unique(phyla_tax_info_arch_no_bact_euk$Major_Taxa), 
+                                  c("Euryarchaeota","Crenarchaeota","Diapherotrites", "Pacearchaeota", "Thaumarchaeota", "Woesearchaeota", "Unclassified", "Unresolved_Archaea"))),"Euryarchaeota","Crenarchaeota","Diapherotrites", "Pacearchaeota", "Thaumarchaeota", "Woesearchaeota", "Unclassified", "Unresolved_Archaea" )
+phyla_tax_info_arch_no_bact_euk$Major_Taxa <- factor(phyla_tax_info_arch_no_bact_euk$Major_Taxa, levels = taxaLevels_arch)
+
+
+ggplot(phyla_tax_info_arch_no_bact_euk, aes(x=Sample, y=Proportion, fill=Major_Taxa)) +
+  geom_bar(width=0.6, stat="identity", color = "white") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90, vjust=0.4, hjust=1), legend.title=element_blank()) +
+  labs(x="Sample", y="% of 16S rRNA gene copies recovered", title="All samples") + 
+  scale_fill_manual(values = colors) +
+  ylim(0,3)
+```
+Box plot of the same information.
+
+```{r}
+# custom color plot
+fill_col = c("#b2182b", "#fb9a99", "#2166ac", "#a6cee3")
+
+# reordering the labels
+phyla_tax_info_arch_reorder  <- phyla_tax_info_arch %>%
+  mutate(Phyla = fct_relevel(Major_Taxa,  "Unresolved_Archaea", "Unclassified",  "Eukaryota","Bacteria","Woesearchaeota","Thaumarchaeota",   "Pacearchaeota", "Euryarchaeota", "Diapherotrites", "Crenarchaeota"))
+
+phyla_tax_info_arch_reorder <- phyla_tax_info_arch_reorder %>%
+  mutate(template = fct_relevel(template,  "gDNA","cDNA"))
+
+# new color scheme
+major_taxa_arch_phyla <- ggplot(phyla_tax_info_arch_reorder, aes(Proportion, Phyla)) +
+  geom_jitter(aes(fill = monthsoil, shape = template, color = "black"), 
+              size = 2.5, width = 0.15, height = 0) +
+  scale_shape_manual(values = c(21, 24)) +
+  scale_fill_manual(values = fill_col) +
+  scale_color_manual(values = "black") +  
+  my_theme_grid +
+    labs(x = "% of 16S rRNA gene copies recovered", y = "", title = "Major taxa and Archaeal phyla") +
+    guides(color = "none", fill = guide_legend(override.aes = list(color = fill_col)))
+
+major_taxa_arch_phyla
+```
+
+
+
+### Classes within Archaea 
+First will agglomerate the count and taxa table to the Class level.
+
+```{r}
+# FINDING ALL "UNCLASSIFIED" ASVS FOR ARCHAEAL CLASS PLOT
+# Extract the taxonomy table
+taxonomy_table <- phyloseq::tax_table(ASV_physeq)
+
+# Extract the OTU count table
+otu_table1 <- otu_table(ASV_physeq)
+
+# Identify ASVs assigned to "Archaea" kingdom but not a phylum
+archaea_no_phylum <- rownames(taxonomy_table)[taxonomy_table[, "Kingdom"] == "Archaea" & is.na(taxonomy_table[, "Phylum"])]
+
+# Identify ASVs assigned to a phylum but not a class
+archaea_phylum_no_class <- rownames(taxonomy_table)[taxonomy_table[, "Kingdom"] == "Archaea" & 
+                                                     !is.na(taxonomy_table[, "Phylum"]) & 
+                                                     is.na(taxonomy_table[, "Class"])]
+
+# Identify ASVs assigned to "Archaea" kingdom with a class
+archaea_with_class <- rownames(taxonomy_table)[taxonomy_table[, "Kingdom"] == "Archaea" & 
+                                                !is.na(taxonomy_table[, "Class"])]
+
+# Sum the OTU counts for these ASVs
+otu_sum_archaea_no_phylum <- colSums(otu_table1[rownames(otu_table1) %in% archaea_no_phylum, ])
+otu_sum_archaea_phylum_no_class <- colSums(otu_table1[rownames(otu_table1) %in% archaea_phylum_no_class, ])
+otu_sum_archaea_with_class <- colSums(otu_table1[rownames(otu_table1) %in% archaea_with_class, ])
+
+# check to make sure I didn't lose any Archaea ASVs
+archaea_all <- rbind(otu_sum_archaea_no_phylum,otu_sum_archaea_phylum_no_class,otu_sum_archaea_with_class)
+archaea_all_sums <- colSums(archaea_all)
+
+
+
+archaea_total <- rownames(taxonomy_table)[taxonomy_table[, "Kingdom"] == "Archaea"]
+otu_sum_archaea_total <- colSums(otu_table1[rownames(otu_table1) %in% archaea_total, ])
+
+identical(archaea_all_sums, otu_sum_archaea_total) # true
+
+# find relative abundance
+bact_count_sums <- colSums(bact_count_table)
+
+otu_sum_archaea_phylum_no_class_prop <- (otu_sum_archaea_phylum_no_class/bact_count_sums)*100
+otu_sum_archaea_no_phylum_prop <- (otu_sum_archaea_no_phylum/bact_count_sums)*100
+
+combined_df <- t(data.frame(
+  Unresolved_Archaeal_phyla = otu_sum_archaea_phylum_no_class_prop,
+  Unresolved_Archaea = otu_sum_archaea_no_phylum_prop,
+  row.names = colnames(bact_count_table)
+))
+```
+
+```{r}
+# making count table broken down by class
+class_counts_tab_arch <- otu_table(tax_glom(ASV_physeq, taxrank="Class")) 
+
+# making a table that holds the kingdom, phylum, and class level info for each ASV 
+class_taxa_tab_arch <- phyloseq::tax_table(tax_glom(ASV_physeq, taxrank="Class")) 
+
+class_tax_tab_arch <- data.frame("Kingdom"=class_taxa_tab_arch[,1], "Phylum"=class_taxa_tab_arch[,2], "Class"=class_taxa_tab_arch[,3], row.names = row.names(class_taxa_tab_arch))
+
+# changing the row names like above so that they correspond to the taxonomy, rather than an ASV identifier
+rownames(class_counts_tab_arch) <- as.vector(class_tax_tab_arch$Class) 
+
+# making a vector of just the Archaea classes
+arch_classes_vec <- as.vector(class_tax_tab_arch[class_tax_tab_arch$Kingdom == "Archaea", "Class"])
+
+# making a table of the counts of the Archaea classes
+arch_class_counts_tab <- class_counts_tab_arch[row.names(class_counts_tab_arch) %in% arch_classes_vec, ] 
+
+colSums(arch_class_counts_tab)
+
+identical(otu_sum_archaea_with_class, colSums(arch_class_counts_tab))
+
+# find relative abundance
+bact_count_sums <- colSums(bact_count_table)
+archaea_all/bact_count_sums
+
+arch_class <- as.data.frame(arch_class_counts_tab)
+
+arch_class_prop <- (arch_class/bact_count_sums)*100
+
+#combine proportions table with unclassified
+all_arch_class_prop <- rbind(combined_df, arch_class_prop)
+
+```
+
+Reformat our proportions/relative abundance table for plotting.
+```{r}
+# first let's make a copy of our table that's safe for manipulating
+arch_classes <- as.data.frame(all_arch_class_prop)
+
+# and add a column of the taxa names so that it is within the table, rather than just as row names (this makes working with ggplot easier)
+arch_classes$Classes <- row.names(arch_classes)
+
+# now we'll transform the table into narrow, or long, format (also makes plotting easier)
+arch_classes_long <- pivot_longer(arch_classes, !Classes, names_to = "Sample", values_to = "Proportion") %>% data.frame()
+
+# now we want a table metadata of each sample to merge into our plotting table so we can use that more easily in our plotting function. Here we're making a new table by pulling what we want from the sample information table
+sample_info_for_merge <- data.frame(
+  "Sample"=row.names(bact_sample_info_table),
+  "month"=bact_sample_info_table$month,
+  "soil"=bact_sample_info_table$soil,
+  "template"=bact_sample_info_table$template,
+  "replicate"=bact_sample_info_table$replicate,
+  "monthsoil"=bact_sample_info_table$monthsoil,
+  stringsAsFactors=F)
+
+# and here we are merging this table with the plotting table we just made
+arch_classes_info <- merge(arch_classes_long, sample_info_for_merge)
+```
+
+#### Figures
+```{r}
+# custom color plot
+fill_col = c("#b2182b", "#fb9a99", "#2166ac", "#a6cee3")
+
+# reordering the labels
+arch_classes_info_reorder  <- arch_classes_info %>%
+  mutate(Class = fct_relevel(Classes,"Unresolved_Archaea", "Unresolved_Archaeal_phyla",  "Woesearchaeota_Incertae_Sedis_AR20", "Woesearchaeota_Incertae_Sedis_AR18",  "Woesearchaeota_Incertae_Sedis_AR16","Woesearchaeota_Incertae_Sedis_AR15","Thermoprotei","Thermoplasmata",   "Pacearchaeota_Incertae_Sedis_AR13", "Nitrososphaerales", "Nitrosopumilales", "Candidatus_Iainarchaeum"))
+
+arch_classes_info_reorder1 <- arch_classes_info_reorder %>%
+  mutate(templates = fct_relevel(template,  "gDNA","cDNA"))
+
+# new color scheme
+major_taxa_arch_classes <- ggplot(arch_classes_info_reorder1, aes(Proportion, Class)) +
+  geom_point(aes(fill = monthsoil, shape = templates, color = "black"), 
+              size = 2.5) +
+  scale_shape_manual(values = c(21, 24)) +
+  scale_fill_manual(values = fill_col) +
+  scale_color_manual(values = "black") +  
+  scale_x_continuous(breaks = seq(0, 10, by = 1)) +
+  my_theme_grid +
+    labs(x = "% of 16S rRNA gene copies recovered", y = "", title = "Orders within Archaea") +
+    guides(color = "none", fill = guide_legend(override.aes = list(color = fill_col)))
+
+major_taxa_arch_classes
+```
+
+```{r}
+# stack two grids
+grid.arrange(major_taxa_arch_phyla, major_taxa_arch_classes, ncol = 1)
+
+# share a legend
+legend99 <- get_legend(major_taxa_arch_phyla)
+taxa_combo <- plot_grid(major_taxa_arch_phyla + theme(legend.position = "none"), 
+          major_taxa_arch_classes + theme(legend.position = "none"),
+          ncol = 1,  rel_heights = c(2,2.1), rel_widths = c(1,1))
+
+
+plot_grid(taxa_combo, legend99, 
+          ncol=2, rel_widths = c(1, 0.3), rel_heights = c(1, 0.3))
 ```
 
 ## Relative abundance phyloseq
